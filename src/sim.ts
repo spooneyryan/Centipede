@@ -1,0 +1,765 @@
+// The whole game as a deterministic, fixed-timestep simulation.
+//
+// This is the TypeScript port of the Rust `Game` facade (src/game.rs), reshaped
+// the way GameBase's co-op component needs it: `step(inputs)` advances exactly
+// one tick, everything outcome-deciding lives in the `Game` object, and
+// `takeSnapshot`/`restoreSnapshot`/`fingerprint` make it rewindable. The rule
+// that decides what belongs here: does it affect what HAPPENS, or only what it
+// looks like? Nothing in this file touches the DOM, a clock, or `Math.random`.
+//
+// Arithmetic discipline: `+ - * / sqrt floor ceil min max` only — all
+// bit-exact across JavaScript engines — plus a BigInt xorshift64* RNG whose
+// sequence matches the Rust original exactly. No trigonometry anywhere.
+
+import {
+  BOTTOM_ROW,
+  BOTTOM_TRAP_ROWS,
+  BULLET_COOLDOWN,
+  BULLET_HIT_RADIUS,
+  BULLET_SPEED,
+  CELL,
+  COLS,
+  DYING_TIME,
+  EXTRA_LIFE_EVERY,
+  LEVEL_CLEAR_TIME,
+  MAX_BULLETS,
+  PLAYER_HIT_RADIUS,
+  PLAYER_LIVES,
+  PLAYER_TOP_ROW,
+  ROWS,
+  SCORE_HEAD,
+  SCORE_BODY,
+  SCORE_MUSHROOM,
+  SCORE_MUSHROOM_REPAIR,
+  SHROOM_MIN_COUNT,
+  SHROOM_START_COUNT,
+  TOP_ROW,
+  cellAt,
+  cellCenter,
+} from "./config";
+import { Segment, Train, spawnWave, stepInterval } from "./centipede";
+import { Player, type Bullet } from "./entities";
+import { Hit, MushroomField } from "./mushrooms";
+import { Rng } from "./rng";
+
+/** Ticks per second. A tick is the unit of time; the constant lives here, not
+ * in the host. */
+export const TPS = 60;
+export const DT = 1 / TPS;
+
+// --- Input bit flags. -----------------------------------------------------
+// The low six bits mirror the Rust `INPUT_*` constants; the pointer rides in
+// the high bits so the whole input is ONE exactly-comparable integer, which is
+// what the co-op session's prediction check (`===`) and the wire format need.
+export const INPUT_LEFT = 1 << 0;
+export const INPUT_RIGHT = 1 << 1;
+export const INPUT_UP = 1 << 2;
+export const INPUT_DOWN = 1 << 3;
+export const INPUT_FIRE = 1 << 4;
+export const INPUT_START = 1 << 5;
+const POINTER_ACTIVE = 1 << 6;
+const COORD_SHIFT_X = 7;
+const COORD_SHIFT_Y = 18;
+const COORD_MASK = 0x7ff; // 11 bits: 0..2047, covers 1920 and 1080
+
+export type Input = number;
+
+/** Pack held buttons and (optionally) a pointer position into one integer.
+ * Pointer coordinates are quantized to whole playfield pixels BEFORE the
+ * simulation sees them, so the value played is exactly the value on the wire. */
+export function packInput(bits: number, pointer?: { x: number; y: number } | null): Input {
+  let v = bits & 0x3f;
+  if (pointer) {
+    const px = Math.min(Math.max(Math.round(pointer.x), 0), COORD_MASK);
+    const py = Math.min(Math.max(Math.round(pointer.y), 0), COORD_MASK);
+    v |= POINTER_ACTIVE | (px << COORD_SHIFT_X) | (py << COORD_SHIFT_Y);
+  }
+  return v;
+}
+
+export function inputPointer(v: Input): { x: number; y: number } | null {
+  if ((v & POINTER_ACTIVE) === 0) return null;
+  return { x: (v >> COORD_SHIFT_X) & COORD_MASK, y: (v >> COORD_SHIFT_Y) & COORD_MASK };
+}
+
+/** Extrapolate a peer's pointer for the co-op session's `predictInput` hook.
+ * Buttons repeat; an active pointer is projected along its recent motion. */
+export function predictInput(recent: Input[], ahead: number): Input {
+  const n = recent.length;
+  const last = recent[n - 1] ?? 0;
+  if (n < 3) return last;
+  const a = inputPointer(recent[n - 3]!);
+  const c = inputPointer(last);
+  if (!a || !c) return last;
+  const k = Math.min(ahead, 6) / 2;
+  return packInput(last, { x: c.x + (c.x - a.x) * k, y: c.y + (c.y - a.y) * k });
+}
+
+// --- Game states, exactly the Rust constants. ------------------------------
+export const STATE_ATTRACT = 0;
+export const STATE_PLAYING = 1;
+export const STATE_DYING = 2;
+export const STATE_LEVEL_CLEAR = 3;
+export const STATE_GAME_OVER = 4;
+
+/** Deterministic event counters. Presentation diffs these each frame to fire
+ * sounds and effects, so a rolled-back tick can never play its sound twice —
+ * the counters rewind with the rest of the state. */
+export interface GameEvents {
+  shots: number;
+  mushroomHits: number;
+  mushroomKills: number;
+  bodyKills: number;
+  headKills: number;
+  deaths: number;
+  levelClears: number;
+  extraLives: number;
+  starts: number;
+}
+
+const EVENT_KEYS: (keyof GameEvents)[] = [
+  "shots",
+  "mushroomHits",
+  "mushroomKills",
+  "bodyKills",
+  "headKills",
+  "deaths",
+  "levelClears",
+  "extraLives",
+  "starts",
+];
+
+function freshEvents(): GameEvents {
+  return {
+    shots: 0,
+    mushroomHits: 0,
+    mushroomKills: 0,
+    bodyKills: 0,
+    headKills: 0,
+    deaths: 0,
+    levelClears: 0,
+    extraLives: 0,
+    starts: 0,
+  };
+}
+
+export interface GameOptions {
+  /** 1 for solo (exactly the original game), 2 for co-op. */
+  players?: number;
+  /** A designed mushroom layout: COLS*ROWS hit points, row-major, 0..4.
+   * Applied verbatim when a run starts; later levels evolve it as normal. */
+  layout?: ArrayLike<number> | null;
+  /** Level the run begins on (the wave and speeds scale from it). */
+  startLevel?: number;
+  /** Carried-over high score shown on the HUD. Solo only — in co-op both
+   * machines must agree, so the host's value rides in the payload. */
+  highScore?: number;
+}
+
+interface PlayerSlot {
+  player: Player;
+  input: number;
+  prevInput: number;
+  fireCooldown: number;
+}
+
+export class Game {
+  rng: Rng;
+  field: MushroomField;
+  slots: PlayerSlot[];
+  bullets: Bullet[];
+  trains: Train[];
+
+  /** Vertical range the centipede is allowed to roam. `topLimit` tightens once
+   * the centipede has reached the floor, trapping it in the player's area. */
+  topLimit: number;
+  bottomLimit: number;
+
+  score: number;
+  highScore: number;
+  lives: number;
+  level: number;
+  nextExtraLife: number;
+
+  state: number;
+  stateTimer: number;
+
+  /** Ticks since construction; the simulation's only clock. */
+  tick: number;
+
+  events: GameEvents;
+
+  readonly playerCount: number;
+  readonly startLevel: number;
+  readonly layout: Uint8Array | null;
+
+  constructor(seed: number, options: GameOptions = {}) {
+    this.playerCount = options.players === 2 ? 2 : 1;
+    this.startLevel = Math.max(1, Math.floor(options.startLevel ?? 1));
+    this.layout = options.layout ? Uint8Array.from(options.layout as ArrayLike<number>) : null;
+
+    this.rng = new Rng(seed >>> 0);
+    this.field = new MushroomField();
+    this.slots = [];
+    this.bullets = [];
+    this.trains = [];
+    this.topLimit = TOP_ROW;
+    this.bottomLimit = BOTTOM_ROW;
+    this.score = 0;
+    this.highScore = Math.max(0, Math.floor(options.highScore ?? 0));
+    this.lives = PLAYER_LIVES;
+    this.level = this.startLevel;
+    this.nextExtraLife = EXTRA_LIFE_EVERY;
+    this.state = STATE_ATTRACT;
+    this.stateTimer = 0;
+    this.tick = 0;
+    this.events = freshEvents();
+
+    for (let i = 0; i < this.playerCount; i++) {
+      this.slots.push({ player: this.spawnPlayer(i), input: 0, prevInput: 0, fireCooldown: 0 });
+    }
+
+    // Seed a field and a centipede so the attract screen has something moving
+    // behind the title — exactly the Rust constructor.
+    this.seedField();
+    this.trains = spawnWave(this.startLevel);
+  }
+
+  private spawnPlayer(index: number): Player {
+    if (this.playerCount === 1) return new Player();
+    // Co-op blasters start apart, thirds of the way across the floor.
+    const col = index === 0 ? Math.floor(COLS / 3) : Math.floor((COLS * 2) / 3);
+    const [x, y] = cellCenter(col, BOTTOM_ROW);
+    return new Player(x, y);
+  }
+
+  private seedField(): void {
+    if (this.layout) {
+      this.field.cells.set(this.layout.subarray(0, this.field.cells.length));
+    } else {
+      this.field.scatter(this.rng, SHROOM_START_COUNT);
+    }
+  }
+
+  /** Begin a new run from the attract or game-over screen. */
+  start(): void {
+    this.score = 0;
+    this.lives = PLAYER_LIVES;
+    this.level = this.startLevel;
+    this.nextExtraLife = EXTRA_LIFE_EVERY;
+    this.field.clear();
+    this.seedField();
+    this.beginLevel();
+    this.state = STATE_PLAYING;
+    this.stateTimer = 0;
+    this.events.starts += 1;
+  }
+
+  /** Advance the simulation by exactly one tick. `inputs` is one packed input
+   * per seat, seat order guaranteed identical on both machines. */
+  step(inputs: Input[]): void {
+    for (let i = 0; i < this.slots.length; i++) {
+      this.slots[i].input = inputs[i] ?? 0;
+    }
+
+    const startPressed = this.slots.some(
+      (s) => (s.input & INPUT_START) !== 0 && (s.prevInput & INPUT_START) === 0,
+    );
+
+    switch (this.state) {
+      case STATE_ATTRACT:
+      case STATE_GAME_OVER:
+        // Let the demo centipede keep wandering behind the overlay.
+        this.advanceCentipede(DT);
+        if (startPressed) this.start();
+        break;
+      case STATE_PLAYING:
+        this.updatePlaying(DT);
+        break;
+      case STATE_DYING:
+        this.stateTimer -= DT;
+        if (this.stateTimer <= 0) this.afterDeath();
+        break;
+      case STATE_LEVEL_CLEAR:
+        this.stateTimer -= DT;
+        if (this.stateTimer <= 0) {
+          this.level += 1;
+          this.beginLevel();
+          this.state = STATE_PLAYING;
+        }
+        break;
+    }
+
+    for (const slot of this.slots) slot.prevInput = slot.input;
+    this.tick += 1;
+  }
+
+  get segmentsLeft(): number {
+    let n = 0;
+    for (const t of this.trains) n += t.length;
+    return n;
+  }
+
+  get over(): boolean {
+    return this.state === STATE_GAME_OVER;
+  }
+
+  // --- Internals, ported 1:1 from the Rust impl block. ---------------------
+
+  /** Reset the playfield for the current level, keeping score and lives. */
+  private beginLevel(): void {
+    if (this.layout && this.level === this.startLevel) {
+      // A designed layout is the field, exactly as drawn, on the level it was
+      // drawn for; later levels top it back up like any other field.
+      this.field.cells.set(this.layout.subarray(0, this.field.cells.length));
+    } else {
+      this.field.scatter(this.rng, SHROOM_MIN_COUNT);
+    }
+    this.trains = spawnWave(this.level);
+    this.bullets.length = 0;
+    for (let i = 0; i < this.slots.length; i++) {
+      this.slots[i].player = this.spawnPlayer(i);
+      this.slots[i].fireCooldown = 0;
+    }
+    this.topLimit = TOP_ROW;
+    this.bottomLimit = BOTTOM_ROW;
+  }
+
+  private afterDeath(): void {
+    this.lives = Math.max(this.lives - 1, 0);
+    if (this.lives === 0) {
+      this.highScore = Math.max(this.highScore, this.score);
+      this.state = STATE_GAME_OVER;
+    } else {
+      // The mushroom field survives the player, but the wave restarts.
+      this.trains = spawnWave(this.level);
+      this.bullets.length = 0;
+      for (let i = 0; i < this.slots.length; i++) {
+        this.slots[i].player = this.spawnPlayer(i);
+        this.slots[i].fireCooldown = 0;
+      }
+      this.topLimit = TOP_ROW;
+      this.state = STATE_PLAYING;
+    }
+  }
+
+  private updatePlaying(dt: number): void {
+    for (const slot of this.slots) this.movePlayer(slot, dt);
+    for (const slot of this.slots) this.fire(slot, dt);
+    this.updateBullets(dt);
+    this.advanceCentipede(dt);
+
+    if (this.anyPlayerHit()) {
+      this.state = STATE_DYING;
+      this.stateTimer = DYING_TIME;
+      this.bullets.length = 0;
+      this.events.deaths += 1;
+      return;
+    }
+
+    if (this.trains.length === 0) {
+      const repaired = this.field.repairAll();
+      this.addScore(repaired * SCORE_MUSHROOM_REPAIR);
+      this.state = STATE_LEVEL_CLEAR;
+      this.stateTimer = LEVEL_CLEAR_TIME;
+      this.events.levelClears += 1;
+    }
+  }
+
+  private movePlayer(slot: PlayerSlot, dt: number): void {
+    // The cabinet used a trackball: no speed limit, just a position, clamped
+    // like any other move. The keyboard then adds its frame of travel on top
+    // — the original places the pointer and steers in the same frame
+    // (set_pointer before update, move_player inside it), so holding a
+    // direction while the mouse moves nudges the blaster off the cursor.
+    const pointer = inputPointer(slot.input);
+    if (pointer) slot.player.place(pointer.x, pointer.y);
+    const held = (bit: number) => (slot.input & bit) !== 0;
+    const dx = (held(INPUT_RIGHT) ? 1 : 0) - (held(INPUT_LEFT) ? 1 : 0);
+    const dy = (held(INPUT_DOWN) ? 1 : 0) - (held(INPUT_UP) ? 1 : 0);
+    slot.player.steer(dx, dy, dt);
+  }
+
+  private fire(slot: PlayerSlot, dt: number): void {
+    slot.fireCooldown = Math.max(slot.fireCooldown - dt, 0);
+    const owner = this.slots.indexOf(slot);
+    let own = 0;
+    for (const b of this.bullets) if (b.owner === owner) own += 1;
+    if ((slot.input & INPUT_FIRE) !== 0 && slot.fireCooldown === 0 && own < MAX_BULLETS) {
+      const [x, y] = slot.player.muzzle();
+      this.bullets.push({ x, y, owner });
+      slot.fireCooldown = BULLET_COOLDOWN;
+      this.events.shots += 1;
+    }
+  }
+
+  /** Bullets are fast enough to skip a whole cell in one frame, so they are
+   * swept forward in sub-steps no larger than half a cell. */
+  private updateBullets(dt: number): void {
+    if (this.bullets.length === 0) return;
+    const distance = BULLET_SPEED * dt;
+    const steps = Math.max(Math.ceil(distance / (CELL * 0.4)), 1);
+    const step = distance / steps;
+    const ceiling = TOP_ROW * CELL;
+
+    for (let s = 0; s < steps; s++) {
+      let i = 0;
+      while (i < this.bullets.length) {
+        this.bullets[i].y -= step;
+        if (this.bullets[i].y < ceiling || this.resolveBullet(i)) {
+          this.bullets.splice(i, 1);
+        } else {
+          i += 1;
+        }
+      }
+    }
+  }
+
+  /** Returns true if bullet `i` hit something and should be consumed. */
+  private resolveBullet(i: number): boolean {
+    const bx = this.bullets[i].x;
+    const by = this.bullets[i].y;
+
+    // Centipede first: a segment standing on a mushroom should be the thing
+    // that takes the shot.
+    const radiusSq = BULLET_HIT_RADIUS * BULLET_HIT_RADIUS;
+    for (let ti = 0; ti < this.trains.length; ti++) {
+      const t = this.trains[ti].t;
+      for (let si = 0; si < this.trains[ti].length; si++) {
+        const [sx, sy] = this.trains[ti].segments[si].position(t);
+        const dx = bx - sx;
+        const dy = by - sy;
+        if (dx * dx + dy * dy <= radiusSq) {
+          this.hitSegment(ti, si);
+          return true;
+        }
+      }
+    }
+
+    const [col, row] = cellAt(bx, by);
+    switch (this.field.damage(col, row)) {
+      case Hit.Missed:
+        return false;
+      case Hit.Damaged:
+        this.events.mushroomHits += 1;
+        return true;
+      case Hit.Destroyed:
+        this.addScore(SCORE_MUSHROOM);
+        this.events.mushroomKills += 1;
+        return true;
+    }
+    return false;
+  }
+
+  /** Kill one segment: it becomes a mushroom, and anything behind it becomes a
+   * new centipede led by the segment that was following it. */
+  private hitSegment(trainIndex: number, segmentIndex: number): void {
+    if (segmentIndex === 0) {
+      this.addScore(SCORE_HEAD);
+      this.events.headKills += 1;
+    } else {
+      this.addScore(SCORE_BODY);
+      this.events.bodyKills += 1;
+    }
+
+    const dirY = this.trains[trainIndex].dirY;
+    const level = this.level;
+    const [[col, row], tail] = this.trains[trainIndex].sever(segmentIndex);
+    this.field.plant(col, row);
+
+    // Re-time the shortened front half; a stub of a centipede moves faster.
+    if (this.trains[trainIndex].isEmpty()) {
+      this.trains.splice(trainIndex, 1);
+    } else {
+      const len = this.trains[trainIndex].length;
+      this.trains[trainIndex].interval = stepInterval(level, len);
+    }
+
+    if (tail.length > 0) {
+      const train = new Train(tail, stepInterval(level, tail.length));
+      train.dirY = dirY;
+      this.trains.push(train);
+    }
+  }
+
+  private advanceCentipede(dt: number): void {
+    const top = this.topLimit;
+    const bottom = this.bottomLimit;
+    let reachedBottom = false;
+    for (const train of this.trains) {
+      reachedBottom = train.update(dt, this.field, top, bottom) || reachedBottom;
+    }
+    if (reachedBottom) {
+      // Once it is down here it stays down here, harassing the player,
+      // instead of marching back up to the top of the screen.
+      this.topLimit = Math.max(BOTTOM_ROW - BOTTOM_TRAP_ROWS, PLAYER_TOP_ROW);
+    }
+  }
+
+  private anyPlayerHit(): boolean {
+    const radiusSq = PLAYER_HIT_RADIUS * PLAYER_HIT_RADIUS;
+    for (const slot of this.slots) {
+      for (const train of this.trains) {
+        for (const segment of train.segments) {
+          const [sx, sy] = segment.position(train.t);
+          const dx = slot.player.x - sx;
+          const dy = slot.player.y - sy;
+          if (dx * dx + dy * dy <= radiusSq) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private addScore(points: number): void {
+    if (points === 0) return;
+    this.score += points;
+    while (this.score >= this.nextExtraLife) {
+      this.lives += 1;
+      this.nextExtraLife += EXTRA_LIFE_EVERY;
+      this.events.extraLives += 1;
+    }
+    this.highScore = Math.max(this.highScore, this.score);
+  }
+}
+
+// --- Snapshot / restore / fingerprint: the rollback seam. -------------------
+// Snapshots are plain in-memory objects (never serialized), refilled in place
+// when the session hands back a retired buffer, so steady-state rollback
+// allocates nothing.
+
+interface SegmentSnap {
+  col: number;
+  row: number;
+  prevCol: number;
+  prevRow: number;
+  dirX: number;
+}
+
+interface TrainSnap {
+  segments: SegmentSnap[];
+  segmentCount: number;
+  dirY: number;
+  interval: number;
+  timer: number;
+  t: number;
+}
+
+interface SlotSnap {
+  x: number;
+  y: number;
+  input: number;
+  prevInput: number;
+  fireCooldown: number;
+}
+
+export interface Snap {
+  rngState: bigint;
+  cells: Uint8Array;
+  slots: SlotSnap[];
+  bullets: { x: number; y: number; owner: number }[];
+  bulletCount: number;
+  trains: TrainSnap[];
+  trainCount: number;
+  topLimit: number;
+  bottomLimit: number;
+  score: number;
+  highScore: number;
+  lives: number;
+  level: number;
+  nextExtraLife: number;
+  state: number;
+  stateTimer: number;
+  tick: number;
+  events: GameEvents;
+}
+
+export function takeSnapshot(g: Game, into?: Snap): Snap {
+  const snap: Snap =
+    into ??
+    ({
+      rngState: 0n,
+      cells: new Uint8Array(COLS * ROWS),
+      slots: [],
+      bullets: [],
+      bulletCount: 0,
+      trains: [],
+      trainCount: 0,
+      topLimit: 0,
+      bottomLimit: 0,
+      score: 0,
+      highScore: 0,
+      lives: 0,
+      level: 0,
+      nextExtraLife: 0,
+      state: 0,
+      stateTimer: 0,
+      tick: 0,
+      events: freshEvents(),
+    } as Snap);
+
+  snap.rngState = g.rng.save();
+  snap.cells.set(g.field.cells);
+
+  while (snap.slots.length < g.slots.length) {
+    snap.slots.push({ x: 0, y: 0, input: 0, prevInput: 0, fireCooldown: 0 });
+  }
+  for (let i = 0; i < g.slots.length; i++) {
+    const s = snap.slots[i];
+    const live = g.slots[i];
+    s.x = live.player.x;
+    s.y = live.player.y;
+    s.input = live.input;
+    s.prevInput = live.prevInput;
+    s.fireCooldown = live.fireCooldown;
+  }
+
+  snap.bulletCount = g.bullets.length;
+  while (snap.bullets.length < g.bullets.length) snap.bullets.push({ x: 0, y: 0, owner: 0 });
+  for (let i = 0; i < g.bullets.length; i++) {
+    snap.bullets[i].x = g.bullets[i].x;
+    snap.bullets[i].y = g.bullets[i].y;
+    snap.bullets[i].owner = g.bullets[i].owner;
+  }
+
+  snap.trainCount = g.trains.length;
+  while (snap.trains.length < g.trains.length) {
+    snap.trains.push({ segments: [], segmentCount: 0, dirY: 0, interval: 0, timer: 0, t: 0 });
+  }
+  for (let i = 0; i < g.trains.length; i++) {
+    const ts = snap.trains[i];
+    const train = g.trains[i];
+    ts.segmentCount = train.segments.length;
+    while (ts.segments.length < train.segments.length) {
+      ts.segments.push({ col: 0, row: 0, prevCol: 0, prevRow: 0, dirX: 0 });
+    }
+    for (let j = 0; j < train.segments.length; j++) {
+      const ss = ts.segments[j];
+      const seg = train.segments[j];
+      ss.col = seg.col;
+      ss.row = seg.row;
+      ss.prevCol = seg.prevCol;
+      ss.prevRow = seg.prevRow;
+      ss.dirX = seg.dirX;
+    }
+    ts.dirY = train.dirY;
+    ts.interval = train.interval;
+    ts.timer = train.timer;
+    ts.t = train.t;
+  }
+
+  snap.topLimit = g.topLimit;
+  snap.bottomLimit = g.bottomLimit;
+  snap.score = g.score;
+  snap.highScore = g.highScore;
+  snap.lives = g.lives;
+  snap.level = g.level;
+  snap.nextExtraLife = g.nextExtraLife;
+  snap.state = g.state;
+  snap.stateTimer = g.stateTimer;
+  snap.tick = g.tick;
+  for (const key of EVENT_KEYS) snap.events[key] = g.events[key];
+
+  return snap;
+}
+
+export function restoreSnapshot(g: Game, snap: Snap): void {
+  g.rng.restore(snap.rngState);
+  g.field.cells.set(snap.cells);
+
+  for (let i = 0; i < g.slots.length; i++) {
+    const s = snap.slots[i];
+    const live = g.slots[i];
+    live.player.place(s.x, s.y);
+    live.input = s.input;
+    live.prevInput = s.prevInput;
+    live.fireCooldown = s.fireCooldown;
+  }
+
+  g.bullets.length = 0;
+  for (let i = 0; i < snap.bulletCount; i++) {
+    g.bullets.push({ x: snap.bullets[i].x, y: snap.bullets[i].y, owner: snap.bullets[i].owner });
+  }
+
+  g.trains.length = 0;
+  for (let i = 0; i < snap.trainCount; i++) {
+    const ts = snap.trains[i];
+    const segments: Segment[] = [];
+    for (let j = 0; j < ts.segmentCount; j++) {
+      const ss = ts.segments[j];
+      const seg = new Segment(ss.col, ss.row, ss.dirX);
+      seg.prevCol = ss.prevCol;
+      seg.prevRow = ss.prevRow;
+      segments.push(seg);
+    }
+    const train = new Train(segments, ts.interval);
+    train.dirY = ts.dirY;
+    train.timer = ts.timer;
+    train.t = ts.t;
+    g.trains.push(train);
+  }
+
+  g.topLimit = snap.topLimit;
+  g.bottomLimit = snap.bottomLimit;
+  g.score = snap.score;
+  g.highScore = snap.highScore;
+  g.lives = snap.lives;
+  g.level = snap.level;
+  g.nextExtraLife = snap.nextExtraLife;
+  g.state = snap.state;
+  g.stateTimer = snap.stateTimer;
+  g.tick = snap.tick;
+  for (const key of EVENT_KEYS) g.events[key] = snap.events[key];
+}
+
+/** A cheap value that changes when the simulated state changes. Floats are
+ * rounded to integers before mixing — the comparison crosses a JSON trip. */
+export function fingerprint(g: Game): number {
+  let h = 0x811c9dc5;
+  const mix = (n: number): void => {
+    h ^= n | 0;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  };
+
+  mix(g.tick);
+  const rng = g.rng.save();
+  mix(Number(rng & 0xffffffffn));
+  mix(Number(rng >> 32n));
+  mix(g.score);
+  mix(g.lives);
+  mix(g.level);
+  mix(g.state);
+  mix(Math.round(g.stateTimer * 1e6));
+  mix(g.topLimit);
+
+  for (const slot of g.slots) {
+    mix(Math.round(slot.player.x * 1e6));
+    mix(Math.round(slot.player.y * 1e6));
+    mix(Math.round(slot.fireCooldown * 1e6));
+  }
+  for (const b of g.bullets) {
+    mix(Math.round(b.x * 1e6));
+    mix(Math.round(b.y * 1e6));
+    mix(b.owner);
+  }
+  for (const train of g.trains) {
+    mix(train.dirY);
+    mix(Math.round(train.timer * 1e6));
+    for (const seg of train.segments) {
+      mix(seg.col);
+      mix(seg.row);
+      mix(seg.dirX);
+    }
+  }
+  // The field folds in as bytes; 1296 cells is nothing at one hash per tick.
+  const cells = g.field.cells;
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i] !== 0) {
+      mix(i);
+      mix(cells[i]);
+    }
+  }
+  for (const key of EVENT_KEYS) mix(g.events[key]);
+
+  return h >>> 0;
+}

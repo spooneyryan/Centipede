@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "@ccllc/coop": ["../../../GameBase/GameBase/packages/coop/src/coop.ts"],
+      "@ccllc/arcade/*": ["../../../GameBase/GameBase/packages/arcade/*/index.d.ts"]
+    }
+  },
+  "include": ["src", "scripts/headless-entry.ts"]
+}

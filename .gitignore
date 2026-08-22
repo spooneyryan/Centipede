@@ -1,0 +1,12 @@
+/node_modules/
+/dist/
+
+# Transient harness lock, not project configuration.
+/.claude/scheduled_tasks.lock
+
+# The headless proof bundles the simulation here before running it.
+/.check/
+
+# The .NET host's build output.
+/server/bin/
+/server/obj/

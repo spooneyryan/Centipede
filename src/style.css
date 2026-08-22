@@ -1,0 +1,171 @@
+/* The page chrome reads the --game-* variables the skin system writes, so
+ * picking a skin re-dresses every panel and button. The canvas keeps its own
+ * palette (the pixel-perfect classic look) unless a skin is chosen. */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--game-surface-canvas, #05060a);
+  color: var(--game-text-primary, #cfe3ff);
+  font-family: var(--game-font-body, ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace);
+  overflow: hidden;
+}
+
+#app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px;
+}
+
+#stage {
+  position: relative;
+  width: 100%;
+  max-width: calc(177.78vh - 36px);
+  flex: 0 1 auto;
+}
+
+/* The canvas is always 1920x1080 internally; the display module letterboxes. */
+canvas#screen {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  display: block;
+  background: #000;
+  border: 1px solid var(--game-border-default, #1b2436);
+  border-radius: var(--game-radius-panel, 6px);
+  box-shadow: 0 0 60px rgba(87, 217, 119, 0.08);
+  image-rendering: auto;
+}
+
+#legend {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--game-text-muted, #6b7c96);
+  text-align: center;
+}
+#legend b { color: var(--game-text-primary, #cfe3ff); font-weight: 600; }
+
+#toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+#netstats {
+  font-size: 12px;
+  color: var(--game-text-muted, #6b7c96);
+  letter-spacing: 0.04em;
+}
+
+button {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 14px;
+  color: var(--game-text-primary, #cfe3ff);
+  background: var(--game-surface-raised, #10182a);
+  border: 1px solid var(--game-border-default, #1b2436);
+  border-radius: var(--game-radius-control, 5px);
+  cursor: pointer;
+  transition: background var(--game-motion-fast, 120ms) ease;
+}
+button:hover { background: var(--game-surface-panel, #0b1120); }
+button.primary {
+  background: var(--game-action-primary, #57d977);
+  color: var(--game-action-on-primary, #04160a);
+  border-color: transparent;
+}
+button.primary:hover { background: var(--game-action-primary-hover, #7ce598); }
+button:disabled { opacity: 0.45; cursor: default; }
+
+/* #panel is positioned over the stage; .hidden must still win. */
+.panel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  width: 320px;
+  overflow-y: auto;
+  padding: 16px;
+  background: var(--game-surface-panel, rgba(8, 12, 22, 0.94));
+  border: 1px solid var(--game-border-default, #1b2436);
+  border-radius: var(--game-radius-panel, 8px);
+  box-shadow: var(--game-shadow-panel, 0 12px 40px rgba(0, 0, 0, 0.5));
+}
+.panel.hidden, .hidden { display: none; }
+
+.panel h2, dialog h2 {
+  margin: 0 0 10px;
+  font-size: 17px;
+  font-family: var(--game-font-display, inherit);
+  color: var(--game-action-primary, #57d977);
+  letter-spacing: 0.06em;
+}
+.panel h3 { margin: 14px 0 6px; font-size: 13px; color: var(--game-text-muted, #6b7c96); }
+
+.field-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+  font-size: 13px;
+}
+.field-row input[type="text"], .field-row input[type="number"], .field-row input[type="url"], .field-row select {
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 8px;
+  color: var(--game-text-primary, #cfe3ff);
+  background: var(--game-surface-canvas, #05060a);
+  border: 1px solid var(--game-border-default, #1b2436);
+  border-radius: var(--game-radius-control, 5px);
+  max-width: 170px;
+}
+
+.button-row { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+
+.status { font-size: 13px; margin: 10px 0 4px; color: var(--game-text-primary, #cfe3ff); }
+.status[data-kind="error"], .status[data-kind="mismatch"] { color: var(--game-status-warning, #ffb454); }
+.help { font-size: 11px; color: var(--game-text-muted, #6b7c96); line-height: 1.7; }
+.hint { font-size: 12px; color: var(--game-text-muted, #6b7c96); margin: 4px 0 10px; }
+
+.games { list-style: none; padding: 0; margin: 8px 0; display: flex; flex-direction: column; gap: 6px; }
+.games button { width: 100%; text-align: left; }
+
+.shelf { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
+.shelf-entry { display: flex; gap: 6px; }
+.shelf-load { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shelf-delete { flex: 0 0 auto; }
+.shelf-empty { font-size: 12px; color: var(--game-text-muted, #6b7c96); }
+
+dialog {
+  min-width: 380px;
+  max-width: 520px;
+  max-height: 85vh;
+  overflow-y: auto;
+  color: var(--game-text-primary, #cfe3ff);
+  background: var(--game-surface-panel, #0a101d);
+  border: 1px solid var(--game-border-default, #1b2436);
+  border-radius: var(--game-radius-panel, 8px);
+  box-shadow: var(--game-shadow-panel, 0 12px 40px rgba(0, 0, 0, 0.6));
+  padding: 20px 22px;
+}
+dialog::backdrop { background: rgba(2, 4, 8, 0.65); }
+
+.asset-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--game-border-default, #1b2436);
+}
+.asset-row:last-child { border-bottom: none; }
+.asset-row .asset-label { flex: 1; font-size: 13px; }
+.asset-row .asset-state { font-size: 11px; color: var(--game-text-muted, #6b7c96); }
+.asset-row canvas { background: var(--game-surface-canvas, #05060a); border: 1px solid var(--game-border-default, #1b2436); border-radius: 4px; }

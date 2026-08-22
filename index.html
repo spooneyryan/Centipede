@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rustipede</title>
+<link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="screen" width="1920" height="1080"></canvas>
+
+    <!-- The level editor: chrome around the same canvas the game draws on. -->
+    <aside id="editorPanel" class="panel hidden">
+      <h2>Field designer</h2>
+      <label class="field-row">Name <input id="editorName" type="text" maxlength="48" value="Untitled field"></label>
+      <label class="field-row">Starts on level <input id="editorStartLevel" type="number" min="1" max="50" value="1"></label>
+      <div class="button-row">
+        <button id="editorUndo" type="button">Undo</button>
+        <button id="editorRedo" type="button">Redo</button>
+        <button id="editorClear" type="button">Clear</button>
+        <button id="editorScatter" type="button">Scatter</button>
+      </div>
+      <div class="button-row">
+        <button id="editorSave" type="button">Save</button>
+        <button id="editorSaveAs" type="button">Save as</button>
+        <button id="editorNew" type="button">New</button>
+      </div>
+      <div class="button-row">
+        <button id="editorPlaytest" type="button" class="primary">Playtest</button>
+        <button id="editorHostCoop" type="button">Host co-op</button>
+      </div>
+      <div class="button-row">
+        <button id="editorDownload" type="button">Download</button>
+        <button id="editorShare" type="button">Share link</button>
+        <button id="editorImport" type="button">Import</button>
+      </div>
+      <h3>Shelf</h3>
+      <div id="editorShelf" class="shelf"></div>
+      <p id="editorStatus" class="status">Paint with the mouse; right-click erases.</p>
+      <p id="editorHelp" class="help"></p>
+      <button id="editorClose" type="button" class="close">Close</button>
+      <input id="editorFile" type="file" accept=".json,application/json" hidden>
+    </aside>
+
+    <!-- Internet co-op lobby. -->
+    <aside id="lobbyPanel" class="panel hidden">
+      <h2>Internet co-op</h2>
+      <p class="hint">Two blasters, one field, nothing on the wire but inputs.</p>
+      <p id="lobbyLevel" class="hint"></p>
+      <div class="button-row">
+        <button id="lobbyHost" type="button" class="primary">Host a game</button>
+        <button id="lobbyFind" type="button">Find a game</button>
+      </div>
+      <ul id="lobbyGames" class="games"></ul>
+      <p id="lobbyStatus" class="status" data-kind="info">Open this page in two windows to play.</p>
+      <div class="button-row">
+        <button id="lobbyLeave" type="button">Leave</button>
+        <button id="lobbyClose" type="button" class="close">Close</button>
+      </div>
+    </aside>
+  </div>
+
+  <div id="legend">
+    <b>MOUSE</b> or <b>&larr; &uarr; &rarr; &darr;</b> / <b>WASD</b> move &nbsp;&middot;&nbsp;
+    <b>CLICK</b> or <b>SPACE</b> fire &nbsp;&middot;&nbsp;
+    <b>CLICK</b> / <b>ENTER</b> start &nbsp;&middot;&nbsp; <b>P</b> pause &nbsp;&middot;&nbsp; <b>R</b> restart
+  </div>
+
+  <div id="toolbar">
+    <button id="btnFullscreen" type="button">Full screen</button>
+    <button id="btnCoop" type="button">Co-op</button>
+    <button id="btnEditor" type="button">Level editor</button>
+    <button id="btnSprites" type="button">Sprites</button>
+    <button id="btnSounds" type="button">Sounds</button>
+    <button id="btnReplays" type="button">Replays</button>
+    <button id="btnSettings" type="button">Settings</button>
+    <span id="netstats"></span>
+  </div>
+</div>
+
+<!-- Settings: one schema, one sanitizer, applied live. -->
+<dialog id="settingsDialog">
+  <form id="settingsForm" method="dialog">
+    <h2>Settings</h2>
+    <label class="field-row">Sound <input name="soundOn" type="checkbox"></label>
+    <label class="field-row">Volume <input name="sfxVolume" type="range" min="0" max="100" step="5"></label>
+    <label class="field-row">Mouse control <input name="mouseControl" type="checkbox"></label>
+    <label class="field-row">Background grid <input name="showGrid" type="checkbox"></label>
+    <label class="field-row">Glow effects <input name="glowEffects" type="checkbox"></label>
+    <label class="field-row">Skin
+      <select name="skin" id="skinSelect"></select>
+    </label>
+    <label class="field-row">Custom hue <input name="skinHue" type="range" min="0" max="359" step="1"></label>
+    <div class="button-row">
+      <button id="skinImport" type="button">Import skin file&hellip;</button>
+    </div>
+    <p id="skinStatus" class="status" data-kind="info"></p>
+    <label class="field-row">Player name <input name="playerName" type="text" maxlength="12" placeholder="shown in lobbies"></label>
+    <label class="field-row">Share anonymous telemetry <input name="telemetryEnabled" type="checkbox"></label>
+    <label class="field-row">Telemetry endpoint <input name="telemetryEndpoint" type="url" placeholder="https://&hellip; (optional)"></label>
+    <div class="button-row">
+      <button value="save" class="primary">Save</button>
+      <button value="cancel" formnovalidate>Cancel</button>
+    </div>
+  </form>
+  <input id="skinFile" type="file" accept=".json,application/json" hidden>
+</dialog>
+
+<!-- Editable sprites: every drawable, redrawable. -->
+<dialog id="spritesDialog">
+  <h2>Sprites</h2>
+  <p class="hint">Draw over any sprite in the pixel editor; Reset returns the original art.</p>
+  <div id="spriteRows"></div>
+  <div class="button-row"><button id="spritesClose" type="button">Close</button></div>
+</dialog>
+
+<!-- Editable sounds: every effect is a synth document. -->
+<dialog id="soundsDialog">
+  <h2>Sounds</h2>
+  <p class="hint">Every effect is a little synth document — open one in the designer.</p>
+  <div id="soundRows"></div>
+  <div class="button-row"><button id="soundsClose" type="button">Close</button></div>
+</dialog>
+
+<!-- Replays: deterministic ghosts of past runs. -->
+<dialog id="replaysDialog">
+  <h2>Replays</h2>
+  <p class="hint">A replay is the seed plus every input — the whole run in a few kilobytes.</p>
+  <div class="button-row">
+    <button id="replaySaveLast" type="button" class="primary" disabled>Save last run</button>
+    <button id="replayImport" type="button">Import</button>
+  </div>
+  <p id="replayNote" class="status"></p>
+  <div id="replayRows" class="shelf"></div>
+  <div class="button-row"><button id="replaysClose" type="button">Close</button></div>
+  <input id="replayFile" type="file" accept=".json,application/json" hidden>
+</dialog>
+
+<!-- The React island for GameBase's studio editors. -->
+<div id="studioRoot"></div>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
