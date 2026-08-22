@@ -92,10 +92,10 @@ against source: `vite.config.ts` aliases `@ccllc/coop`, `@ccllc/arcade/*` and
 `server/Server.csproj` holds a `ProjectReference` to the relay. Switching to
 the published packages is an `npm install` plus deleting the aliases.
 
-One wart: `@ccllc/studio` v1.3.6 has a missing-import bug (`SFX_FIELD_LIST` in
-`SfxStudio.tsx`) that crashes the package at load. `vite.config.ts` carries a
-build-time patch (`rustipede:patch-sfx-field-list`); delete it once the
-one-line fix lands upstream.
+Because the aliases point at a live checkout rather than a pinned package,
+GameBase can change underneath the game. Re-run `npm run check` and
+`npm run typecheck` after pulling it — they are cheap and they are what would
+catch a breaking change.
 
 ## Layout
 

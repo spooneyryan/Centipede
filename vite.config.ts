@@ -5,35 +5,13 @@
 // aliases below with nothing else changing.
 
 import { resolve } from "node:path";
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig } from "vite";
 
 const GB = resolve(__dirname, "../../../GameBase/GameBase/packages");
-
-/** Upstream bug shim: `@ccllc/studio`'s SfxStudio.tsx (v1.3.6) uses
- * SFX_FIELD_LIST without importing it, which crashes the whole package at
- * module load. We may not edit the GameBase repo from here, so this prepends
- * the missing import at build time. Delete once the one-line fix lands
- * upstream (add SFX_FIELD_LIST to the `@ccllc/arcade/sfx` import block). */
-function patchSfxStudio(): Plugin {
-  return {
-    name: "rustipede:patch-sfx-field-list",
-    enforce: "pre",
-    transform(code, id) {
-      const path = id.replace(/\\/g, "/");
-      if (!path.endsWith("packages/studio/src/SfxStudio.tsx")) return null;
-      if (/import\s*\{[^}]*\bSFX_FIELD_LIST\b/.test(code)) return null; // fixed upstream
-      return {
-        code: `import { SFX_FIELD_LIST } from "@ccllc/arcade/sfx";\n${code}`,
-        map: null,
-      };
-    },
-  };
-}
 
 export default defineConfig({
   root: __dirname,
   base: "./", // relative asset paths survive a virtual-directory deployment
-  plugins: [patchSfxStudio()],
   resolve: {
     // The studio sources live in the GameBase checkout, whose own
     // node_modules also holds a React — without dedupe the bundle carries two
