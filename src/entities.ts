@@ -55,4 +55,8 @@ export interface Bullet {
   y: number;
   /** Which player fired it — 0 in single player, 0 or 1 in co-op. */
   owner: number;
+  /** Sideways velocity, non-zero only while the curve gun is steering it. */
+  vx: number;
+  /** Carries on through a mushroom instead of stopping at it. */
+  pierce: boolean;
 }

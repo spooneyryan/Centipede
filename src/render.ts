@@ -17,6 +17,9 @@ import type { CanvasColors } from "@ccllc/arcade/skin";
 import type { SpriteAsset } from "@ccllc/arcade/shmup";
 import { drawSpriteAsset } from "@ccllc/studio/render";
 import { BULLET_LEN, CELL, COLS, HEIGHT, PLAYER_SIZE, WIDTH } from "./config";
+import { ENEMY_FLEA, ENEMY_SCORPION, ENEMY_SPIDER, enemySize } from "./enemies";
+import { COIN_LABELS, COIN_SHIELD, COIN_LIFE, COIN_MULTIPLIER } from "./powerups";
+import { FLAG_POISON, SPECIAL_BONUS, SPECIAL_FALLING, SPECIAL_REFLECT } from "./mushrooms";
 import {
   Game,
   STATE_ATTRACT,
@@ -31,9 +34,32 @@ import {
 const CAP = [null, "#6d7f99", "#c9b73f", "#dd7a3c", "#e2497e"] as const;
 const STEM = [null, "#41506a", "#8e8130", "#9b5730", "#9c3459"] as const;
 
-export type SpriteSlot = "mushroom" | "head" | "body" | "player" | "player2" | "bullet";
+export type SpriteSlot =
+  | "mushroom"
+  | "head"
+  | "body"
+  | "player"
+  | "player2"
+  | "bullet"
+  | "spider"
+  | "flea"
+  | "scorpion"
+  | "saucer"
+  | "coin";
 
-export const SPRITE_SLOTS: SpriteSlot[] = ["mushroom", "head", "body", "player", "player2", "bullet"];
+export const SPRITE_SLOTS: SpriteSlot[] = [
+  "mushroom",
+  "head",
+  "body",
+  "player",
+  "player2",
+  "bullet",
+  "spider",
+  "flea",
+  "scorpion",
+  "saucer",
+  "coin",
+];
 
 export interface OverlayText {
   subtitle: string;
@@ -70,10 +96,10 @@ export class Renderer {
 
     this.drawBackground(w, h, CELL, o);
 
-    for (const [col, row, hp] of game.field.iter()) {
+    for (const [col, row, hp, flags] of game.field.iter()) {
       const x = (col + 0.5) * CELL;
       const y = (row + 0.5) * CELL;
-      this.drawMushroom(x, y, CELL, hp, o);
+      this.drawMushroom(x, y, CELL, hp, o, flags);
     }
 
     for (const train of game.trains) {
@@ -84,14 +110,41 @@ export class Renderer {
       }
     }
 
+    for (const enemy of game.enemies) {
+      this.drawEnemy(enemy.kind, enemy.x, enemy.y, enemy.vx, o);
+    }
+
+    for (const m of game.falling) {
+      this.drawMushroom(m.x, m.y, CELL, 4, o, SPECIAL_FALLING);
+    }
+
+    for (const coin of game.coins) {
+      this.drawCoin(coin.kind, coin.x, coin.y, coin.life, o);
+    }
+
     for (const bullet of game.bullets) {
       this.drawBullet(bullet.x, bullet.y, BULLET_LEN, o);
     }
 
     if (game.state === STATE_PLAYING) {
       for (let i = 0; i < game.slots.length; i++) {
-        this.drawPlayer(game.slots[i].player.x, game.slots[i].player.y, PLAYER_SIZE, i, o, i === o.localSeat);
+        const slot = game.slots[i];
+        if (slot.powers.shield > 0) {
+          const ctx = this.ctx;
+          ctx.save();
+          // Pulses faster as it runs out, so you feel it about to lapse.
+          const urgency = slot.powers.shield < 2 ? 16 : 6;
+          ctx.globalAlpha = 0.4 + Math.abs(Math.sin(o.clock * urgency)) * 0.45;
+          ctx.strokeStyle = "#7fe9ff";
+          ctx.lineWidth = Math.max(2, PLAYER_SIZE * 0.1);
+          ctx.beginPath();
+          ctx.arc(slot.player.x, slot.player.y, PLAYER_SIZE * 0.85, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+        this.drawPlayer(slot.player.x, slot.player.y, PLAYER_SIZE, i, o, i === o.localSeat);
       }
+      this.drawPowers(game, o);
     }
 
     this.drawHud(game, w, CELL, o);
@@ -178,7 +231,16 @@ export class Renderer {
     ctx.setLineDash([]);
   }
 
-  private drawMushroom(x: number, y: number, size: number, hp: number, o: RenderOptions): void {
+  private drawMushroom(
+    x: number,
+    y: number,
+    size: number,
+    hp: number,
+    o: RenderOptions,
+    flags = 0,
+  ): void {
+    const poisoned = (flags & FLAG_POISON) !== 0;
+    const special = (flags >> 1) & 0b11;
     const custom = o.sprites.mushroom;
     if (custom) {
       const ctx = this.ctx;
@@ -193,8 +255,25 @@ export class Renderer {
 
     const ctx = this.ctx;
     const r = size * 0.36;
-    const capColour = o.colors ? o.colors.alt : (CAP[hp] ?? CAP[4]!);
-    const stemColour = o.colors ? o.colors.dim : (STEM[hp] ?? STEM[4]!);
+    // A poisoned mushroom has to be unmistakable — it is the difference
+    // between a routine wave and the centipede dropping into your lap.
+    let capColour = o.colors ? o.colors.alt : (CAP[hp] ?? CAP[4]!);
+    let stemColour = o.colors ? o.colors.dim : (STEM[hp] ?? STEM[4]!);
+    if (poisoned) {
+      capColour = "#b04cff";
+      stemColour = "#5c2a8c";
+    } else if (special === SPECIAL_REFLECT) {
+      capColour = "#9fd8ff";
+      stemColour = "#41708f";
+    } else if (special === SPECIAL_FALLING) {
+      capColour = "#ff8a3c";
+      stemColour = "#8f4416";
+    } else if (special === SPECIAL_BONUS) {
+      // Flashing, because it pays a multiplier and should catch the eye.
+      const hue = Math.floor((o.clock * 320) % 360);
+      capColour = `hsl(${hue} 90% 62%)`;
+      stemColour = `hsl(${hue} 60% 34%)`;
+    }
 
     ctx.fillStyle = stemColour;
     ctx.fillRect(x - r * 0.34, y - r * 0.1, r * 0.68, r * 1.05);
@@ -360,6 +439,137 @@ export class Renderer {
     ctx.restore();
   }
 
+  /** The other bugs. Each is a simple silhouette that reads at a glance —
+   * the point is telling them apart at speed, not detail. */
+  private drawEnemy(kind: number, x: number, y: number, dirX: number, o: RenderOptions): void {
+    const ctx = this.ctx;
+    const size = enemySize(kind);
+    const slot =
+      kind === ENEMY_SPIDER
+        ? o.sprites.spider
+        : kind === ENEMY_FLEA
+          ? o.sprites.flea
+          : kind === ENEMY_SCORPION
+            ? o.sprites.scorpion
+            : o.sprites.saucer;
+    if (slot) {
+      ctx.save();
+      ctx.translate(x, y);
+      if ((dirX || 1) < 0) ctx.scale(-1, 1);
+      drawSpriteAsset(ctx, slot, size);
+      ctx.restore();
+      return;
+    }
+
+    const r = size * 0.5;
+    ctx.save();
+    ctx.translate(x, y);
+    const wob = Math.sin(o.clock * 18) * r * 0.16;
+
+    if (kind === ENEMY_SPIDER) {
+      ctx.strokeStyle = "#c9a0ff";
+      ctx.lineWidth = Math.max(2, size * 0.075);
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      for (const side of [-1, 1]) {
+        for (const lift of [-0.5, 0, 0.5]) {
+          ctx.moveTo(side * r * 0.35, lift * r * 0.4);
+          ctx.lineTo(side * r * 1.15, lift * r * 0.9 + wob * side);
+        }
+      }
+      ctx.stroke();
+      ctx.fillStyle = "#8c4fe0";
+      ctx.beginPath();
+      ctx.ellipse(0, 0, r * 0.55, r * 0.45, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#ffffff";
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.arc(side * r * 0.2, -r * 0.12, r * 0.09, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (kind === ENEMY_FLEA) {
+      ctx.fillStyle = "#ff6a8a";
+      ctx.beginPath();
+      ctx.moveTo(0, -r);
+      ctx.lineTo(r * 0.62, r * 0.5);
+      ctx.lineTo(0, r * 0.2);
+      ctx.lineTo(-r * 0.62, r * 0.5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = "#8f2540";
+      ctx.lineWidth = Math.max(1.5, size * 0.06);
+      ctx.stroke();
+    } else if (kind === ENEMY_SCORPION) {
+      ctx.strokeStyle = "#ffd447";
+      ctx.lineWidth = Math.max(2, size * 0.09);
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.9, r * 0.1);
+      ctx.lineTo(r * 0.3, r * 0.1);
+      ctx.lineTo(r * 0.75, -r * 0.6 + wob);
+      ctx.stroke();
+      ctx.fillStyle = "#e0a91f";
+      ctx.beginPath();
+      ctx.ellipse(-r * 0.25, r * 0.1, r * 0.5, r * 0.32, 0, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.fillStyle = "#7fe9ff";
+      ctx.beginPath();
+      ctx.ellipse(0, 0, r, r * 0.42, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#eafcff";
+      ctx.beginPath();
+      ctx.arc(0, -r * 0.22, r * 0.42, Math.PI, 0);
+      ctx.fill();
+      ctx.fillStyle = "#12303a";
+      ctx.beginPath();
+      ctx.arc(0, -r * 0.2, r * 0.15, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /** A coin. Fades as it runs out of time, because the countdown is the whole
+   * tension — an uncollected coin is a wasted opportunity. */
+  private drawCoin(kind: number, x: number, y: number, life: number, o: RenderOptions): void {
+    const ctx = this.ctx;
+    const r = CELL * 0.34;
+    ctx.save();
+    ctx.translate(x, y);
+    // Blink out over the last second and a half.
+    if (life < 1.5) ctx.globalAlpha = 0.35 + Math.abs(Math.sin(o.clock * 14)) * 0.65;
+
+    if (o.sprites.coin) {
+      drawSpriteAsset(ctx, o.sprites.coin, CELL * 0.9);
+      ctx.restore();
+      return;
+    }
+
+    const tint =
+      kind === COIN_SHIELD ? "#7fe9ff" : kind === COIN_LIFE ? "#57d977" : kind === COIN_MULTIPLIER ? "#ff9ee0" : "#ffd447";
+    if (o.glow) {
+      ctx.shadowColor = tint;
+      ctx.shadowBlur = CELL * 0.55;
+    }
+    // Spinning: the width oscillates, which reads as a coin turning over.
+    const squash = Math.abs(Math.cos(o.clock * 5 + x * 0.01));
+    ctx.fillStyle = tint;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, Math.max(r * squash, r * 0.18), r, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    if (squash > 0.45) {
+      ctx.fillStyle = "#20160a";
+      ctx.font = `700 ${Math.round(CELL * 0.26)}px ui-monospace, monospace`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(COIN_LABELS[kind] ?? "?", 0, 1);
+    }
+    ctx.restore();
+  }
+
   private drawBullet(x: number, y: number, size: number, o: RenderOptions): void {
     const custom = o.sprites.bullet;
     const ctx = this.ctx;
@@ -379,6 +589,27 @@ export class Renderer {
     ctx.fillStyle = o.colors ? o.colors.ink : "#fffbe8";
     ctx.fillRect(x - size * 0.16, y - size, size * 0.32, size * 2);
     ctx.restore();
+  }
+
+  /** What each player is currently carrying, above their own blaster, so you
+   * can see it without taking your eyes off the action. */
+  private drawPowers(game: Game, o: RenderOptions): void {
+    const ctx = this.ctx;
+    ctx.font = `700 ${Math.round(CELL * 0.34)}px ui-monospace, monospace`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    for (const slot of game.slots) {
+      const p = slot.powers;
+      const tags: string[] = [];
+      if (p.rapid > 0) tags.push("RAPID");
+      if (p.curve > 0) tags.push("CURVE");
+      if (p.pierce > 0) tags.push("PIERCE");
+      if (p.multiplier > 1) tags.push(`${p.multiplier}x`);
+      if (p.lock) tags.push("LOCK");
+      if (tags.length === 0) continue;
+      ctx.fillStyle = o.colors ? o.colors.accentBright : "#ffd447";
+      ctx.fillText(tags.join(" "), slot.player.x, slot.player.y - PLAYER_SIZE * 0.9);
+    }
   }
 
   private drawHud(game: Game, w: number, cell: number, o: RenderOptions): void {

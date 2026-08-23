@@ -85,7 +85,7 @@ const GAME_VERSION = "1.0.0";
 // must carry everything that defines behaviour. Bump it whenever the
 // simulation changes, or a cached page will pair with a new build and the two
 // will quietly play different games.
-const COOP_TOKEN = "rustipede-v2"; // v2: tuning is a value, carried in the payload
+const COOP_TOKEN = "rustipede-v3"; // v3: the other bugs, coins and power-ups
 
 const el = <T extends HTMLElement>(id: string): T => {
   const found = document.getElementById(id);

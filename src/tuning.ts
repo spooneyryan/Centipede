@@ -53,6 +53,63 @@ export interface Tuning {
   shroomStartCount: number;
   /** Mushrooms the field is topped back up to each level. */
   shroomMinCount: number;
+
+  // --- The other bugs. Setting an interval to 0 turns that enemy off. ------
+  spiderSpeed: number;
+  spiderEvery: number;
+  fleaSpeed: number;
+  fleaEvery: number;
+  /** Mushrooms left in the player's band below which a flea is sent. */
+  fleaThreshold: number;
+  /** Cells a flea skips between the mushrooms it drops. */
+  fleaTrailGap: number;
+  scorpionSpeed: number;
+  scorpionEvery: number;
+  scorpionFromLevel: number;
+  saucerSpeed: number;
+  saucerEvery: number;
+  saucerFromLevel: number;
+  /** How much faster everything spawns per level. */
+  spawnLevelGain: number;
+
+  scoreSpiderClose: number;
+  scoreSpiderMid: number;
+  scoreSpiderFar: number;
+  scoreFlea: number;
+  scoreScorpion: number;
+  scoreSaucer: number;
+
+  // --- Coins and power-ups. -------------------------------------------------
+  /** Chance in 100 that a destroyed mushroom drops a coin. */
+  coinChance: number;
+  /** Seconds a coin waits before it gives up. */
+  coinLife: number;
+  coinGravity: number;
+  coinBounce: number;
+  /** Seconds a rapid/curve/pierce power lasts. */
+  powerSeconds: number;
+  shieldSeconds: number;
+  multiplierSeconds: number;
+  /** How much faster the rapid-fire coin makes you shoot. */
+  rapidFactor: number;
+  /** Sideways pixels per second the curve gun can steer a shot. */
+  curveSteer: number;
+  coinWeightRapid: number;
+  coinWeightCurve: number;
+  coinWeightShield: number;
+  coinWeightPierce: number;
+  coinWeightLife: number;
+  coinWeightMultiplier: number;
+  coinWeightLock: number;
+
+  // --- Apeiron's late-wave mushrooms. --------------------------------------
+  /** Level from which special mushrooms start appearing. */
+  specialFromLevel: number;
+  /** Chance in 100 that a mushroom planted at level-start is special. */
+  specialChance: number;
+  /** Pixels per second a loosed mushroom falls. */
+  fallingSpeed: number;
+  scoreBonusShroom: number;
 }
 
 /** The original game, exactly: every default is the constant it replaced. */
@@ -71,6 +128,49 @@ export const DEFAULT_TUNING: Tuning = {
   shroomHp: SHROOM_HP,
   shroomStartCount: SHROOM_START_COUNT,
   shroomMinCount: SHROOM_MIN_COUNT,
+
+  spiderSpeed: 300,
+  spiderEvery: 9,
+  fleaSpeed: 420,
+  fleaEvery: 5,
+  fleaThreshold: 24,
+  fleaTrailGap: 2,
+  scorpionSpeed: 260,
+  scorpionEvery: 16,
+  scorpionFromLevel: 2,
+  saucerSpeed: 520,
+  saucerEvery: 24,
+  saucerFromLevel: 3,
+  spawnLevelGain: 0.12,
+
+  scoreSpiderClose: 900,
+  scoreSpiderMid: 600,
+  scoreSpiderFar: 300,
+  scoreFlea: 200,
+  scoreScorpion: 1000,
+  scoreSaucer: 1200,
+
+  coinChance: 22,
+  coinLife: 7,
+  coinGravity: 900,
+  coinBounce: 0.66,
+  powerSeconds: 10,
+  shieldSeconds: 7,
+  multiplierSeconds: 12,
+  rapidFactor: 3.5,
+  curveSteer: 620,
+  coinWeightRapid: 22,
+  coinWeightCurve: 14,
+  coinWeightShield: 16,
+  coinWeightPierce: 14,
+  coinWeightLife: 6,
+  coinWeightMultiplier: 18,
+  coinWeightLock: 10,
+
+  specialFromLevel: 4,
+  specialChance: 10,
+  fallingSpeed: 340,
+  scoreBonusShroom: 500,
 };
 
 export interface TuningField {
@@ -102,6 +202,26 @@ export const TUNING_FIELDS: readonly TuningField[] = [
   { key: "shroomHp", label: "Mushroom toughness", hint: "shots to destroy one", min: 1, max: 4, step: 1, group: "Field" },
   { key: "shroomStartCount", label: "Starting mushrooms", hint: "how crowded a new field is", min: 0, max: 300, step: 1, group: "Field" },
   { key: "shroomMinCount", label: "Mushrooms per level", hint: "the field is topped back up to this", min: 0, max: 300, step: 1, group: "Field" },
+
+  { key: "spiderEvery", label: "Spider every", hint: "seconds between spiders; 0 turns them off", min: 0, max: 40, step: 1, unit: "s", group: "Bugs" },
+  { key: "spiderSpeed", label: "Spider speed", hint: "pixels per second", min: 80, max: 900, step: 10, unit: "px/s", group: "Bugs" },
+  { key: "fleaEvery", label: "Flea every", hint: "seconds between checks; 0 turns them off", min: 0, max: 40, step: 1, unit: "s", group: "Bugs" },
+  { key: "fleaThreshold", label: "Flea trigger", hint: "mushrooms left in your band before a flea is sent", min: 0, max: 120, step: 1, group: "Bugs" },
+  { key: "scorpionEvery", label: "Scorpion every", hint: "seconds between scorpions; 0 turns them off", min: 0, max: 60, step: 1, unit: "s", group: "Bugs" },
+  { key: "scorpionFromLevel", label: "Scorpions from level", hint: "how long before they show up", min: 1, max: 20, step: 1, group: "Bugs" },
+  { key: "saucerEvery", label: "Saucer every", hint: "seconds between saucers; 0 turns them off", min: 0, max: 90, step: 1, unit: "s", group: "Bugs" },
+  { key: "saucerFromLevel", label: "Saucers from level", hint: "how long before they show up", min: 1, max: 20, step: 1, group: "Bugs" },
+  { key: "spawnLevelGain", label: "Spawn rate per level", hint: "how much faster the bugs come each level", min: 0, max: 1, step: 0.02, group: "Bugs" },
+
+  { key: "coinChance", label: "Coin drop chance", hint: "in 100, per mushroom destroyed; 0 turns coins off", min: 0, max: 100, step: 1, unit: "%", group: "Coins" },
+  { key: "coinLife", label: "Coin lifetime", hint: "seconds before it gives up and vanishes", min: 1, max: 30, step: 0.5, unit: "s", group: "Coins" },
+  { key: "powerSeconds", label: "Power-up duration", hint: "seconds of rapid fire, curve or pierce", min: 1, max: 60, step: 1, unit: "s", group: "Coins" },
+  { key: "shieldSeconds", label: "Shield duration", hint: "seconds of invulnerability", min: 1, max: 60, step: 1, unit: "s", group: "Coins" },
+  { key: "rapidFactor", label: "Rapid fire boost", hint: "how much faster rapid fire shoots", min: 1, max: 10, step: 0.25, unit: "x", group: "Coins" },
+  { key: "curveSteer", label: "Curve gun steering", hint: "how hard you can bend a shot in flight", min: 0, max: 2000, step: 20, unit: "px/s", group: "Coins" },
+
+  { key: "specialFromLevel", label: "Odd mushrooms from level", hint: "falling, reflecting and bonus mushrooms", min: 1, max: 30, step: 1, group: "Field" },
+  { key: "specialChance", label: "Odd mushroom chance", hint: "in 100, per mushroom seeded; 0 turns them off", min: 0, max: 100, step: 1, unit: "%", group: "Field" },
 
   { key: "lives", label: "Lives", hint: "blasters you start with", min: 1, max: 9, step: 1, group: "Run" },
   { key: "extraLifeEvery", label: "Extra life every", hint: "points between free blasters", min: 1000, max: 100000, step: 1000, unit: "pts", group: "Run" },

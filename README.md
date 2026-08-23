@@ -13,6 +13,7 @@ so it picks up everything the framework offers:
 | **Replays** | Deterministic ghosts: seed + inputs, a few KB. Save the last run (solo or co-op), watch it back, import/export as files. |
 | **Fullscreen** | `platform/presentation` — DOM fullscreen in a browser, the real window under the Electron wrapper, windowed size remembered in settings. |
 | **Settings** | `core/settings` — one schema, applied live: sound, volume, mouse control, grid, glow, skins, player name, telemetry opt-in. |
+| **The full bestiary** | Spider, flea, scorpion and saucer alongside the centipede, poisoned mushrooms, and Apeiron-style power-up coins. See below. |
 | **Game tuning** | 14 sliders in Settings — fire rate, shots on screen, bullet and blaster speed, the whole centipede speed curve, mushroom toughness and density, lives, extra-life threshold. See below. |
 | **Skins** | The page chrome wears the skin contract's `--game-*` tokens. The canvas defaults to the original palette (pixel-perfect); pick a built-in skin, derive one from a hue, or import a skin file. |
 | **Controller** | `platform/input` — keyboard and gamepad behind one action map (d-pad/left stick move, A/RT fire, Start starts, button 8 pauses, Y restarts). |
@@ -97,6 +98,33 @@ Because the aliases point at a live checkout rather than a pinned package,
 GameBase can change underneath the game. Re-run `npm run check` and
 `npm run typecheck` after pulling it — they are cheap and they are what would
 catch a breaking change.
+
+## The bestiary, the coins, and the odd mushrooms
+
+The 1981 original ships three enemies beyond the centipede, and each one exists
+to punish a different habit:
+
+| | What it does | Punishes |
+|---|---|---|
+| **Spider** | Bounces through your band at 45 degrees eating mushrooms; changes direction at random so it cannot be timed. Pays by range — the closer you let it get, the more it is worth (300/600/900) | camping |
+| **Flea** | Drops straight down leaving a trail of mushrooms. Only comes when your band is running low on cover. Takes **two** hits — the first just speeds it up | clearing your band out |
+| **Scorpion** | Crosses the middle poisoning every mushroom it touches. A centipede that walks into poison stops zig-zagging and **dives for the floor** | ignoring the field |
+| **Saucer** | Apeiron's addition. Crosses high and flattens the field in its lane. Worth the most, and never slows down | — |
+
+**Coins** are Apeiron's best idea, and they are here: they fall out of destroyed
+mushrooms and dead bugs, bounce around, and **expire with a raspberry if you
+leave them** — which is what keeps prising you out of the safe corner. Rapid
+fire, curve gun (steer a shot in flight with left/right), shield, pierce,
+extra life, score multiplier, and a padlock that carries your power-ups
+through one death. **In co-op whoever touches the coin gets it** — they are
+per-player, so they are worth racing for.
+
+From level 4, the field grows **odd mushrooms**: ones that come loose and fall
+on you, ones that reflect your shots, and flashing ones that pay a multiplier.
+
+All of it is tunable, and any of it can be switched off — setting a spawn
+interval or the coin chance to 0 turns that thing off entirely, so you can dial
+back to plain 1981 Centipede if you want it.
 
 ## Tuning the game
 

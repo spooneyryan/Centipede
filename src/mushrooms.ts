@@ -21,16 +21,66 @@ export const Hit = {
 } as const;
 export type Hit = (typeof Hit)[keyof typeof Hit];
 
+/** Per-cell flags, parallel to `cells`. Kept beside the hit points rather
+ * than packed into them: the level document stores hit points only, and these
+ * are all runtime state the field earns during a wave. */
+export const FLAG_POISON = 1 << 0;
+/** Special kinds live in bits 1-2. Apeiron's late-wave mushrooms. */
+export const SPECIAL_NONE = 0;
+/** Comes loose and falls on you; touching it is fatal. */
+export const SPECIAL_FALLING = 1;
+/** Bounces a shot straight back at whoever fired it. */
+export const SPECIAL_REFLECT = 2;
+/** Flashes; shooting it pays a scoring multiplier. */
+export const SPECIAL_BONUS = 3;
+const SPECIAL_SHIFT = 1;
+const SPECIAL_MASK = 0b11 << SPECIAL_SHIFT;
+
 export class MushroomField {
   /** Remaining hit points per cell, `0` meaning "no mushroom". */
   cells: Uint8Array;
   /** Hit points a full-health mushroom has — tunable, so the field carries it
    * rather than reading a module constant. Never changes during a run. */
   readonly fullHp: number;
+  /** Poison bit plus the special kind, one byte per cell. */
+  flags: Uint8Array;
 
   constructor(fullHp: number = SHROOM_HP) {
     this.cells = new Uint8Array(COLS * ROWS);
+    this.flags = new Uint8Array(COLS * ROWS);
     this.fullHp = Math.min(Math.max(Math.round(fullHp), 1), SHROOM_HP);
+  }
+
+  /** Poisoned mushrooms are what make a scorpion frightening: a centipede that
+   * walks into one stops zig-zagging and dives for the floor. */
+  poisoned(col: number, row: number): boolean {
+    const i = MushroomField.index(col, row);
+    return i >= 0 && (this.flags[i] & FLAG_POISON) !== 0;
+  }
+
+  poison(col: number, row: number): void {
+    const i = MushroomField.index(col, row);
+    if (i >= 0 && this.cells[i] > 0) this.flags[i] |= FLAG_POISON;
+  }
+
+  special(col: number, row: number): number {
+    const i = MushroomField.index(col, row);
+    return i < 0 ? SPECIAL_NONE : (this.flags[i] & SPECIAL_MASK) >> SPECIAL_SHIFT;
+  }
+
+  setSpecial(col: number, row: number, kind: number): void {
+    const i = MushroomField.index(col, row);
+    if (i < 0 || this.cells[i] === 0) return;
+    this.flags[i] = (this.flags[i] & ~SPECIAL_MASK) | ((kind & 0b11) << SPECIAL_SHIFT);
+  }
+
+  /** Remove a mushroom outright — what a spider eats and a UFO flattens. */
+  remove(col: number, row: number): boolean {
+    const i = MushroomField.index(col, row);
+    if (i < 0 || this.cells[i] === 0) return false;
+    this.cells[i] = 0;
+    this.flags[i] = 0;
+    return true;
   }
 
   private static index(col: number, row: number): number {
@@ -52,11 +102,15 @@ export class MushroomField {
   /** Plant a full-health mushroom, e.g. where a centipede segment died. */
   plant(col: number, row: number): void {
     const i = MushroomField.index(col, row);
-    if (i >= 0) this.cells[i] = this.fullHp;
+    if (i >= 0) {
+      this.cells[i] = this.fullHp;
+      this.flags[i] = 0; // a fresh mushroom is clean, whatever stood here
+    }
   }
 
   clear(): void {
     this.cells.fill(0);
+    this.flags.fill(0);
   }
 
   /** Take one bullet's worth of damage. */
@@ -64,7 +118,11 @@ export class MushroomField {
     const i = MushroomField.index(col, row);
     if (i < 0 || this.cells[i] === 0) return Hit.Missed;
     this.cells[i] -= 1;
-    return this.cells[i] === 0 ? Hit.Destroyed : Hit.Damaged;
+    if (this.cells[i] === 0) {
+      this.flags[i] = 0;
+      return Hit.Destroyed;
+    }
+    return Hit.Damaged;
   }
 
   count(): number {
@@ -98,15 +156,30 @@ export class MushroomField {
         this.cells[i] = this.fullHp;
         repaired += 1;
       }
+      // The wave ends, the poison clears — otherwise a scorpion's work
+      // compounds forever and later levels become unplayable.
+      this.flags[i] = 0;
     }
     return repaired;
   }
 
-  /** Every living mushroom as `[col, row, hp]`. */
-  *iter(): IterableIterator<[number, number, number]> {
+  /** Living mushrooms inside a row range, which is how the flea decides the
+   * player's area has been cleared out too far. */
+  countRows(topRow: number, bottomRow: number): number {
+    let n = 0;
+    for (let row = topRow; row <= bottomRow; row++) {
+      for (let col = 0; col < COLS; col++) {
+        if (this.cells[row * COLS + col] > 0) n += 1;
+      }
+    }
+    return n;
+  }
+
+  /** Every living mushroom as `[col, row, hp, flags]`. */
+  *iter(): IterableIterator<[number, number, number, number]> {
     for (let i = 0; i < this.cells.length; i++) {
       const hp = this.cells[i];
-      if (hp > 0) yield [i % COLS, Math.floor(i / COLS), hp];
+      if (hp > 0) yield [i % COLS, Math.floor(i / COLS), hp, this.flags[i]];
     }
   }
 }

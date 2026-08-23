@@ -55,6 +55,9 @@ export class Train {
   timer: number;
   /** Progress through the current step, in `[0, 1]`. */
   t: number;
+  /** Set when the head touches a poisoned mushroom: the whole train drops
+   * straight down until it reaches the floor, then resumes walking. */
+  diving: boolean;
 
   constructor(segments: Segment[], interval: number) {
     this.segments = segments;
@@ -62,6 +65,7 @@ export class Train {
     this.interval = interval;
     this.timer = 0;
     this.t = 0;
+    this.diving = false;
   }
 
   get length(): number {
@@ -107,6 +111,18 @@ export class Train {
     const dirY = this.dirY;
     let hitFloor = false;
     const head = this.segments[0];
+
+    // Poisoned: ignore the walls and the mushrooms and plunge.
+    if (this.diving) {
+      const nextRow = head.row + 1;
+      if (nextRow > bottom) {
+        head.row = bottom;
+        return true;
+      }
+      head.row = nextRow;
+      return head.row >= bottom;
+    }
+
     const nextCol = head.col + head.dirX;
 
     if (nextCol < 0 || nextCol >= COLS || field.blocks(nextCol, head.row)) {

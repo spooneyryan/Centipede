@@ -53,6 +53,7 @@ const {
   DEFAULT_TUNING,
   TUNING_FIELDS,
   normalizeTuning,
+  powersAfterDeath,
 } = sim;
 
 let failures = 0;
@@ -132,37 +133,119 @@ function freshGame(seed, players, tuning) {
 // the life of a run, and (c) make two machines that disagree fail LOUDLY
 // rather than drift apart quietly.
 {
-  const play = (tuning, ticks = 600) => {
-    const g = freshGame(31337, 2, tuning);
+  // Level 5 so the level-gated features (scorpions, saucers, odd mushrooms)
+  // are all live and can be turned OFF by a nudge.
+  const play = (tuning, ticks = 900) => {
+    const g = new Game(31337, { players: 2, startLevel: 5, tuning });
+    g.start();
     for (let t = 0; t < ticks; t++) g.step([hostIn(t), joinIn(t)]);
     return g;
   };
 
   const base = play(undefined);
   check("the default tuning is the original game", fingerprint(base) === fingerprint(play(DEFAULT_TUNING)));
+  check("the wider game actually runs", base.events.shots > 0 && base.score > 0, `score ${base.score}`);
 
-  // Every knob must be reachable from the simulation. A field that is exposed
-  // in the UI but wired to nothing is worse than no field at all.
+  // Every knob must be reachable from the simulation. A field exposed in the
+  // UI but wired to nothing is worse than no field at all.
   const NUDGE = {
     fireCooldown: 0.3, maxBullets: 1, bulletSpeed: 900, playerSpeed: 260,
     centipedeSpeed: 4, centipedeLevelGain: 3, centipedeMaxSpeed: 6, loneHeadBoost: 2.5,
     centipedeLength: 6, shroomHp: 1, shroomStartCount: 20, shroomMinCount: 10,
     lives: 5, extraLifeEvery: 2000,
+    // Bugs: rates and speeds, plus turning the level-gated ones off at L5.
+    spiderEvery: 1, spiderSpeed: 800, fleaEvery: 1, fleaThreshold: 120,
+    scorpionEvery: 1, scorpionFromLevel: 20, saucerEvery: 1, saucerFromLevel: 20,
+    spawnLevelGain: 0.9,
+    // Coins: drop rate, how long they linger, and the specials.
+    coinChance: 100, coinLife: 1,
+    specialFromLevel: 20, specialChance: 100,
   };
   const baseline = fingerprint(base);
+  // These only bite once a power-up is actually held, so they get their own
+  // test below rather than a spawn-and-hope.
+  const NEEDS_A_POWERUP = new Set(["powerSeconds", "shieldSeconds", "rapidFactor", "curveSteer"]);
+
   for (const field of TUNING_FIELDS) {
+    if (NEEDS_A_POWERUP.has(field.key)) continue;
     const value = NUDGE[field.key];
     check(
       `the simulation obeys ${field.label.toLowerCase()}`,
-      fingerprint(play({ ...DEFAULT_TUNING, [field.key]: value })) !== baseline,
-      `${field.key} = ${value} changed nothing`,
+      value !== undefined && fingerprint(play({ ...DEFAULT_TUNING, [field.key]: value })) !== baseline,
+      value === undefined ? `no nudge defined for ${field.key}` : `${field.key} = ${value} changed nothing`,
     );
   }
 
+  // The power-up knobs, exercised by granting the power outright.
+  const withPower = (mutate, tuning, ticks = 240) => {
+    const g = new Game(4242, { players: 1, startLevel: 2, tuning });
+    g.start();
+    mutate(g.slots[0].powers);
+    for (let t = 0; t < ticks; t++) g.step([hostIn(t)]);
+    return fingerprint(g);
+  };
+  const rapidOn = (p) => { p.rapid = 30; };
+  const curveOn = (p) => { p.curve = 30; };
+  const shieldOn = (p) => { p.shield = 30; };
+
+  check(
+    "the simulation obeys rapid fire boost",
+    withPower(rapidOn, DEFAULT_TUNING) !== withPower(rapidOn, { ...DEFAULT_TUNING, rapidFactor: 9 }),
+  );
+  check(
+    "the simulation obeys curve gun steering",
+    withPower(curveOn, DEFAULT_TUNING) !== withPower(curveOn, { ...DEFAULT_TUNING, curveSteer: 1800 }),
+  );
+  check(
+    "power-ups lapse, and the duration decides when",
+    withPower(rapidOn, DEFAULT_TUNING) !== withPower((p) => { p.rapid = 0.1; }, DEFAULT_TUNING),
+  );
+  check(
+    "the shield absorbs a hit instead of the player dying",
+    (() => {
+      const g = new Game(99, { players: 1, startLevel: 1 });
+      g.start();
+      g.slots[0].powers.shield = 30;
+      // Park a centipede segment exactly on top of the blaster.
+      g.trains[0].segments[0].col = Math.floor(g.slots[0].player.x / 40);
+      g.trains[0].segments[0].row = Math.floor(g.slots[0].player.y / 40);
+      g.trains[0].segments[0].prevCol = g.trains[0].segments[0].col;
+      g.trains[0].segments[0].prevRow = g.trains[0].segments[0].row;
+      g.step([0]);
+      return g.events.shieldSaves === 1 && g.state === 1 && g.slots[0].powers.shield === 0;
+    })(),
+  );
+  check(
+    "the padlock carries power-ups through a death",
+    (() => {
+      const p = { rapid: 5, curve: 0, shield: 0, pierce: 0, multiplier: 4, multiplierTime: 3, lock: true };
+      powersAfterDeath(p);
+      const kept = p.rapid === 5 && p.multiplier === 4 && p.lock === false;
+      powersAfterDeath(p);
+      return kept && p.rapid === 0 && p.multiplier === 1;
+    })(),
+  );
+  check(
+    "a poisoned mushroom sends the centipede diving",
+    (() => {
+      const g = new Game(7, { players: 1 });
+      g.start();
+      const train = g.trains[0];
+      const head = train.segments[0];
+      g.field.plant(head.col, head.row);
+      g.field.poison(head.col, head.row);
+      const rowBefore = head.row;
+      for (let t = 0; t < 90; t++) g.step([0]);
+      // Diving means it gained rows fast and did not wander sideways.
+      return g.trains.length > 0 && train.segments[0].row > rowBefore + 3;
+    })(),
+  );
+
   // A mismatch has to be caught by the fingerprint on the FIRST settled tick,
   // not discovered later once the two games have visibly parted company.
-  const a = freshGame(31337, 2, DEFAULT_TUNING);
-  const b = freshGame(31337, 2, { ...DEFAULT_TUNING, bulletSpeed: 2000 });
+  const a = new Game(31337, { players: 2, tuning: DEFAULT_TUNING });
+  const b = new Game(31337, { players: 2, tuning: { ...DEFAULT_TUNING, bulletSpeed: 2000 } });
+  a.start(); b.start();
   check("mismatched tuning is caught on tick 0", fingerprint(a) !== fingerprint(b));
 
   // Out-of-range junk from a peer or a stale file must clamp, never throw.

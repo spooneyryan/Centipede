@@ -18,8 +18,10 @@ import {
   CELL,
   COLS,
   DYING_TIME,
+  HEIGHT,
   LEVEL_CLEAR_TIME,
   PLAYER_HIT_RADIUS,
+  PLAYER_SIZE,
   PLAYER_TOP_ROW,
   ROWS,
   SCORE_HEAD,
@@ -27,12 +29,40 @@ import {
   SCORE_MUSHROOM,
   SCORE_MUSHROOM_REPAIR,
   TOP_ROW,
+  WIDTH,
   cellAt,
   cellCenter,
 } from "./config";
 import { Segment, Train, spawnWave, stepInterval } from "./centipede";
 import { Player, type Bullet } from "./entities";
-import { Hit, MushroomField } from "./mushrooms";
+import {
+  Hit,
+  MushroomField,
+  SPECIAL_BONUS,
+  SPECIAL_FALLING,
+  SPECIAL_REFLECT,
+} from "./mushrooms";
+import {
+  ENEMY_FLEA,
+  ENEMY_SAUCER,
+  Spawner,
+  enemyScore,
+  enemySize,
+  stepEnemy,
+  type Enemy,
+} from "./enemies";
+import {
+  agePowers,
+  applyCoin,
+  copyPowers,
+  freshPowers,
+  makeCoin,
+  powersAfterDeath,
+  rollCoinKind,
+  stepCoin,
+  type Coin,
+  type Powers,
+} from "./powerups";
 import { Rng } from "./rng";
 import { DEFAULT_TUNING, normalizeTuning, tuningHash, type Tuning } from "./tuning";
 
@@ -109,6 +139,15 @@ export interface GameEvents {
   levelClears: number;
   extraLives: number;
   starts: number;
+  spiderKills: number;
+  fleaKills: number;
+  scorpionKills: number;
+  saucerKills: number;
+  coinDrops: number;
+  coinPickups: number;
+  coinMisses: number;
+  shieldSaves: number;
+  bonusShrooms: number;
 }
 
 const EVENT_KEYS: (keyof GameEvents)[] = [
@@ -121,6 +160,15 @@ const EVENT_KEYS: (keyof GameEvents)[] = [
   "levelClears",
   "extraLives",
   "starts",
+  "spiderKills",
+  "fleaKills",
+  "scorpionKills",
+  "saucerKills",
+  "coinDrops",
+  "coinPickups",
+  "coinMisses",
+  "shieldSaves",
+  "bonusShrooms",
 ];
 
 function freshEvents(): GameEvents {
@@ -134,6 +182,15 @@ function freshEvents(): GameEvents {
     levelClears: 0,
     extraLives: 0,
     starts: 0,
+    spiderKills: 0,
+    fleaKills: 0,
+    scorpionKills: 0,
+    saucerKills: 0,
+    coinDrops: 0,
+    coinPickups: 0,
+    coinMisses: 0,
+    shieldSaves: 0,
+    bonusShrooms: 0,
   };
 }
 
@@ -159,6 +216,8 @@ interface PlayerSlot {
   input: number;
   prevInput: number;
   fireCooldown: number;
+  /** Coins are collected per player: whoever touches it gets it. */
+  powers: Powers;
 }
 
 export class Game {
@@ -167,6 +226,11 @@ export class Game {
   slots: PlayerSlot[];
   bullets: Bullet[];
   trains: Train[];
+  enemies: Enemy[];
+  coins: Coin[];
+  spawner: Spawner;
+  /** Mushrooms shaken loose and now falling on the player. */
+  falling: { x: number; y: number }[];
 
   /** Vertical range the centipede is allowed to roam. `topLimit` tightens once
    * the centipede has reached the floor, trapping it in the player's area. */
@@ -203,6 +267,10 @@ export class Game {
     this.slots = [];
     this.bullets = [];
     this.trains = [];
+    this.enemies = [];
+    this.coins = [];
+    this.falling = [];
+    this.spawner = new Spawner();
     this.topLimit = TOP_ROW;
     this.bottomLimit = BOTTOM_ROW;
     this.score = 0;
@@ -216,7 +284,13 @@ export class Game {
     this.events = freshEvents();
 
     for (let i = 0; i < this.playerCount; i++) {
-      this.slots.push({ player: this.spawnPlayer(i), input: 0, prevInput: 0, fireCooldown: 0 });
+      this.slots.push({
+        player: this.spawnPlayer(i),
+        input: 0,
+        prevInput: 0,
+        fireCooldown: 0,
+        powers: freshPowers(),
+      });
     }
 
     // Seed a field and a centipede so the attract screen has something moving
@@ -317,6 +391,11 @@ export class Game {
     }
     this.trains = spawnWave(this.level, this.tuning);
     this.bullets.length = 0;
+    this.enemies.length = 0;
+    this.coins.length = 0;
+    this.falling.length = 0;
+    this.spawner.reset(this.tuning, this.rng);
+    this.seedSpecials();
     for (let i = 0; i < this.slots.length; i++) {
       this.slots[i].player = this.spawnPlayer(i);
       this.slots[i].fireCooldown = 0;
@@ -334,9 +413,15 @@ export class Game {
       // The mushroom field survives the player, but the wave restarts.
       this.trains = spawnWave(this.level, this.tuning);
       this.bullets.length = 0;
+      this.enemies.length = 0;
+      this.coins.length = 0;
+      this.falling.length = 0;
+      this.spawner.reset(this.tuning, this.rng);
       for (let i = 0; i < this.slots.length; i++) {
         this.slots[i].player = this.spawnPlayer(i);
         this.slots[i].fireCooldown = 0;
+        // The padlock coin is what buys your power-ups a second life.
+        powersAfterDeath(this.slots[i].powers);
       }
       this.topLimit = TOP_ROW;
       this.state = STATE_PLAYING;
@@ -344,10 +429,14 @@ export class Game {
   }
 
   private updatePlaying(dt: number): void {
+    for (const slot of this.slots) agePowers(slot.powers, dt);
     for (const slot of this.slots) this.movePlayer(slot, dt);
     for (const slot of this.slots) this.fire(slot, dt);
     this.updateBullets(dt);
     this.advanceCentipede(dt);
+    this.updateEnemies(dt);
+    this.updateCoins(dt);
+    this.updateFalling(dt);
 
     if (this.anyPlayerHit()) {
       this.state = STATE_DYING;
@@ -385,10 +474,16 @@ export class Game {
     const owner = this.slots.indexOf(slot);
     let own = 0;
     for (const b of this.bullets) if (b.owner === owner) own += 1;
-    if ((slot.input & INPUT_FIRE) !== 0 && slot.fireCooldown === 0 && own < this.tuning.maxBullets) {
+    // Rapid fire raises the ceiling on bullets in flight too, or the faster
+    // cooldown would just idle against the cap.
+    const rapid = slot.powers.rapid > 0;
+    const cap = rapid ? Math.max(this.tuning.maxBullets, 4) : this.tuning.maxBullets;
+    if ((slot.input & INPUT_FIRE) !== 0 && slot.fireCooldown === 0 && own < cap) {
       const [x, y] = slot.player.muzzle();
-      this.bullets.push({ x, y, owner });
-      slot.fireCooldown = this.tuning.fireCooldown;
+      this.bullets.push({ x, y, owner, vx: 0, pierce: slot.powers.pierce > 0 });
+      slot.fireCooldown = rapid
+        ? this.tuning.fireCooldown / Math.max(this.tuning.rapidFactor, 1)
+        : this.tuning.fireCooldown;
       this.events.shots += 1;
     }
   }
@@ -402,11 +497,29 @@ export class Game {
     const step = distance / steps;
     const ceiling = TOP_ROW * CELL;
 
+    // The curve gun lets a player bend a shot after firing it: the same
+    // left/right input that moves the blaster also steers whatever is in the
+    // air. Applied per sub-step so it is frame-rate independent.
+    for (const slot of this.slots) {
+      if (slot.powers.curve <= 0) continue;
+      const owner = this.slots.indexOf(slot);
+      const dir =
+        ((slot.input & INPUT_RIGHT) !== 0 ? 1 : 0) - ((slot.input & INPUT_LEFT) !== 0 ? 1 : 0);
+      for (const b of this.bullets) {
+        if (b.owner === owner) b.vx = dir * this.tuning.curveSteer;
+      }
+    }
+
     for (let s = 0; s < steps; s++) {
       let i = 0;
       while (i < this.bullets.length) {
-        this.bullets[i].y -= step;
-        if (this.bullets[i].y < ceiling || this.resolveBullet(i)) {
+        const b = this.bullets[i];
+        b.y -= step;
+        if (b.vx !== 0) {
+          b.x += b.vx * (dt / steps);
+          b.x = Math.min(Math.max(b.x, 0), WIDTH);
+        }
+        if (b.y < ceiling || this.resolveBullet(i)) {
           this.bullets.splice(i, 1);
         } else {
           i += 1;
@@ -436,19 +549,80 @@ export class Game {
       }
     }
 
+    // Then the other bugs.
+    for (let ei = 0; ei < this.enemies.length; ei++) {
+      const e = this.enemies[ei];
+      const r = enemySize(e.kind) * 0.55;
+      const dx = bx - e.x;
+      const dy = by - e.y;
+      if (dx * dx + dy * dy <= r * r) {
+        this.hitEnemy(ei, this.bullets[i].owner);
+        return true;
+      }
+    }
+
     const [col, row] = cellAt(bx, by);
+    const special = this.field.special(col, row);
+    const owner = this.bullets[i].owner;
+
+    if (special === SPECIAL_REFLECT && this.field.blocks(col, row)) {
+      // Reflecting mushrooms are indestructible and send the shot back down.
+      return true;
+    }
+
     switch (this.field.damage(col, row)) {
       case Hit.Missed:
         return false;
       case Hit.Damaged:
         this.events.mushroomHits += 1;
-        return true;
-      case Hit.Destroyed:
-        this.addScore(SCORE_MUSHROOM);
+        // A pierce shot carries on through instead of stopping.
+        return !this.bullets[i].pierce;
+      case Hit.Destroyed: {
+        if (special === SPECIAL_BONUS) {
+          this.addScore(this.tuning.scoreBonusShroom * this.multiplierFor(owner));
+          this.events.bonusShrooms += 1;
+        } else {
+          this.addScore(SCORE_MUSHROOM * this.multiplierFor(owner));
+        }
+        if (special === SPECIAL_FALLING) {
+          const [cx, cy] = cellCenter(col, row);
+          this.falling.push({ x: cx, y: cy });
+        }
         this.events.mushroomKills += 1;
-        return true;
+        this.maybeDropCoin((col + 0.5) * CELL, (row + 0.5) * CELL);
+        return !this.bullets[i].pierce;
+      }
     }
     return false;
+  }
+
+  private multiplierFor(owner: number): number {
+    return this.slots[owner]?.powers.multiplier ?? 1;
+  }
+
+  /** One shot into one of the other bugs. */
+  private hitEnemy(index: number, owner: number): void {
+    const e = this.enemies[index];
+    e.hp -= 1;
+    if (e.hp > 0) return; // an angry flea, not a dead one
+
+    const playerY = this.slots[owner]?.player.y ?? HEIGHT;
+    this.addScore(enemyScore(e, playerY, this.tuning) * this.multiplierFor(owner));
+    switch (e.kind) {
+      case ENEMY_FLEA:
+        this.events.fleaKills += 1;
+        break;
+      case ENEMY_SAUCER:
+        this.events.saucerKills += 1;
+        break;
+      case 0:
+        this.events.spiderKills += 1;
+        break;
+      default:
+        this.events.scorpionKills += 1;
+    }
+    this.maybeDropCoin(e.x, e.y);
+    this.enemies.splice(index, 1);
   }
 
   /** Kill one segment: it becomes a mushroom, and anything behind it becomes a
@@ -487,7 +661,14 @@ export class Game {
     const bottom = this.bottomLimit;
     let reachedBottom = false;
     for (const train of this.trains) {
+      // A head that walks into poison stops zig-zagging and drops straight
+      // for the floor — the scorpion's whole reason for existing.
+      const head = train.segments[0];
+      if (head && !train.diving && this.field.poisoned(head.col, head.row)) {
+        train.diving = true;
+      }
       reachedBottom = train.update(dt, this.field, top, bottom) || reachedBottom;
+      if (train.diving && head && head.row >= bottom) train.diving = false;
     }
     if (reachedBottom) {
       // Once it is down here it stays down here, harassing the player,
@@ -496,17 +677,134 @@ export class Game {
     }
   }
 
+  /** Sprinkle the odd mushroom once the player has earned some variety. */
+  private seedSpecials(): void {
+    const t = this.tuning;
+    if (this.level < t.specialFromLevel || t.specialChance <= 0) return;
+    for (let row = TOP_ROW + 1; row <= BOTTOM_ROW - 2; row++) {
+      for (let col = 0; col < COLS; col++) {
+        if (!this.field.blocks(col, row)) continue;
+        if (this.rng.below(100) >= t.specialChance) continue;
+        const kind = 1 + this.rng.below(3); // FALLING | REFLECT | BONUS
+        this.field.setSpecial(col, row, kind);
+      }
+    }
+  }
+
+  private updateEnemies(dt: number): void {
+    this.spawner.update(dt, this.enemies, this.field, this.rng, this.tuning, this.level, 12);
+    let i = 0;
+    while (i < this.enemies.length) {
+      const alive = stepEnemy(this.enemies[i], dt, this.field, this.rng, this.tuning);
+      if (!alive) this.enemies.splice(i, 1);
+      else i += 1;
+    }
+  }
+
+  private updateCoins(dt: number): void {
+    const reach = CELL * 0.85;
+    let i = 0;
+    while (i < this.coins.length) {
+      const coin = this.coins[i];
+      const alive = stepCoin(coin, dt, this.tuning);
+
+      let taken = false;
+      for (const slot of this.slots) {
+        const dx = slot.player.x - coin.x;
+        const dy = slot.player.y - coin.y;
+        if (dx * dx + dy * dy <= reach * reach) {
+          if (applyCoin(coin.kind, slot.powers, this.tuning)) {
+            this.lives += 1;
+            this.events.extraLives += 1;
+          }
+          this.events.coinPickups += 1;
+          taken = true;
+          break;
+        }
+      }
+
+      if (taken || !alive) {
+        // A coin nobody reached in time is the game telling you to move.
+        if (!taken) this.events.coinMisses += 1;
+        this.coins.splice(i, 1);
+      } else {
+        i += 1;
+      }
+    }
+  }
+
+  /** A loosed mushroom drops on the player's head. Lethal on contact — the
+   * shield is the only thing that saves you. */
+  private updateFalling(dt: number): void {
+    let i = 0;
+    while (i < this.falling.length) {
+      const m = this.falling[i];
+      m.y += this.tuning.fallingSpeed * dt;
+      if (m.y > HEIGHT) {
+        this.falling.splice(i, 1);
+      } else {
+        i += 1;
+      }
+    }
+  }
+
+  /** Roll for a coin where a mushroom just died. */
+  private maybeDropCoin(x: number, y: number): void {
+    const t = this.tuning;
+    if (t.coinChance <= 0 || this.rng.below(100) >= t.coinChance) return;
+    this.coins.push(makeCoin(rollCoinKind(this.rng, t), x, y, this.rng, t));
+    this.events.coinDrops += 1;
+  }
+
   private anyPlayerHit(): boolean {
     const radiusSq = PLAYER_HIT_RADIUS * PLAYER_HIT_RADIUS;
     for (const slot of this.slots) {
+      let touched = false;
+
       for (const train of this.trains) {
         for (const segment of train.segments) {
           const [sx, sy] = segment.position(train.t);
           const dx = slot.player.x - sx;
           const dy = slot.player.y - sy;
-          if (dx * dx + dy * dy <= radiusSq) return true;
+          if (dx * dx + dy * dy <= radiusSq) touched = true;
         }
       }
+
+      // A spider or a flea that reaches you is just as fatal as the centipede.
+      // The scorpion and the saucer stay out of the player's band entirely.
+      if (!touched) {
+        for (const e of this.enemies) {
+          const r = (enemySize(e.kind) + PLAYER_SIZE) * 0.42;
+          const dx = slot.player.x - e.x;
+          const dy = slot.player.y - e.y;
+          if (dx * dx + dy * dy <= r * r) {
+            touched = true;
+            break;
+          }
+        }
+      }
+
+      // And a mushroom you shook loose lands on your head.
+      if (!touched) {
+        for (const f of this.falling) {
+          const dx = slot.player.x - f.x;
+          const dy = slot.player.y - f.y;
+          if (dx * dx + dy * dy <= radiusSq) {
+            touched = true;
+            break;
+          }
+        }
+      }
+
+      if (!touched) continue;
+      // The shield is spent absorbing the hit rather than blocking forever,
+      // so it buys a mistake instead of removing the danger.
+      if (slot.powers.shield > 0) {
+        slot.powers.shield = 0;
+        this.events.shieldSaves += 1;
+        continue;
+      }
+      return true;
     }
     return false;
   }
@@ -543,6 +841,7 @@ interface TrainSnap {
   interval: number;
   timer: number;
   t: number;
+  diving: boolean;
 }
 
 interface SlotSnap {
@@ -551,14 +850,23 @@ interface SlotSnap {
   input: number;
   prevInput: number;
   fireCooldown: number;
+  powers: Powers;
 }
 
 export interface Snap {
   rngState: bigint;
   cells: Uint8Array;
+  flags: Uint8Array;
   slots: SlotSnap[];
-  bullets: { x: number; y: number; owner: number }[];
+  bullets: { x: number; y: number; owner: number; vx: number; pierce: boolean }[];
   bulletCount: number;
+  enemies: Enemy[];
+  enemyCount: number;
+  coins: Coin[];
+  coinCount: number;
+  falling: { x: number; y: number }[];
+  fallingCount: number;
+  spawn: { spider: number; flea: number; scorpion: number; saucer: number };
   trains: TrainSnap[];
   trainCount: number;
   topLimit: number;
@@ -580,9 +888,17 @@ export function takeSnapshot(g: Game, into?: Snap): Snap {
     ({
       rngState: 0n,
       cells: new Uint8Array(COLS * ROWS),
+      flags: new Uint8Array(COLS * ROWS),
       slots: [],
       bullets: [],
       bulletCount: 0,
+      enemies: [],
+      enemyCount: 0,
+      coins: [],
+      coinCount: 0,
+      falling: [],
+      fallingCount: 0,
+      spawn: { spider: 0, flea: 0, scorpion: 0, saucer: 0 },
       trains: [],
       trainCount: 0,
       topLimit: 0,
@@ -600,9 +916,10 @@ export function takeSnapshot(g: Game, into?: Snap): Snap {
 
   snap.rngState = g.rng.save();
   snap.cells.set(g.field.cells);
+  snap.flags.set(g.field.flags);
 
   while (snap.slots.length < g.slots.length) {
-    snap.slots.push({ x: 0, y: 0, input: 0, prevInput: 0, fireCooldown: 0 });
+    snap.slots.push({ x: 0, y: 0, input: 0, prevInput: 0, fireCooldown: 0, powers: freshPowers() });
   }
   for (let i = 0; i < g.slots.length; i++) {
     const s = snap.slots[i];
@@ -612,19 +929,67 @@ export function takeSnapshot(g: Game, into?: Snap): Snap {
     s.input = live.input;
     s.prevInput = live.prevInput;
     s.fireCooldown = live.fireCooldown;
+    copyPowers(live.powers, s.powers);
   }
 
   snap.bulletCount = g.bullets.length;
-  while (snap.bullets.length < g.bullets.length) snap.bullets.push({ x: 0, y: 0, owner: 0 });
+  while (snap.bullets.length < g.bullets.length) {
+    snap.bullets.push({ x: 0, y: 0, owner: 0, vx: 0, pierce: false });
+  }
   for (let i = 0; i < g.bullets.length; i++) {
     snap.bullets[i].x = g.bullets[i].x;
     snap.bullets[i].y = g.bullets[i].y;
     snap.bullets[i].owner = g.bullets[i].owner;
+    snap.bullets[i].vx = g.bullets[i].vx;
+    snap.bullets[i].pierce = g.bullets[i].pierce;
   }
+
+  snap.enemyCount = g.enemies.length;
+  while (snap.enemies.length < g.enemies.length) {
+    snap.enemies.push({ kind: 0, x: 0, y: 0, vx: 0, vy: 0, hp: 0, timer: 0 });
+  }
+  for (let i = 0; i < g.enemies.length; i++) {
+    const d = snap.enemies[i];
+    const e = g.enemies[i];
+    d.kind = e.kind;
+    d.x = e.x;
+    d.y = e.y;
+    d.vx = e.vx;
+    d.vy = e.vy;
+    d.hp = e.hp;
+    d.timer = e.timer;
+  }
+
+  snap.coinCount = g.coins.length;
+  while (snap.coins.length < g.coins.length) {
+    snap.coins.push({ kind: 0, x: 0, y: 0, vx: 0, vy: 0, life: 0 });
+  }
+  for (let i = 0; i < g.coins.length; i++) {
+    const d = snap.coins[i];
+    const c = g.coins[i];
+    d.kind = c.kind;
+    d.x = c.x;
+    d.y = c.y;
+    d.vx = c.vx;
+    d.vy = c.vy;
+    d.life = c.life;
+  }
+
+  snap.fallingCount = g.falling.length;
+  while (snap.falling.length < g.falling.length) snap.falling.push({ x: 0, y: 0 });
+  for (let i = 0; i < g.falling.length; i++) {
+    snap.falling[i].x = g.falling[i].x;
+    snap.falling[i].y = g.falling[i].y;
+  }
+
+  snap.spawn.spider = g.spawner.spiderTimer;
+  snap.spawn.flea = g.spawner.fleaTimer;
+  snap.spawn.scorpion = g.spawner.scorpionTimer;
+  snap.spawn.saucer = g.spawner.saucerTimer;
 
   snap.trainCount = g.trains.length;
   while (snap.trains.length < g.trains.length) {
-    snap.trains.push({ segments: [], segmentCount: 0, dirY: 0, interval: 0, timer: 0, t: 0 });
+    snap.trains.push({ segments: [], segmentCount: 0, dirY: 0, interval: 0, timer: 0, t: 0, diving: false });
   }
   for (let i = 0; i < g.trains.length; i++) {
     const ts = snap.trains[i];
@@ -646,6 +1011,7 @@ export function takeSnapshot(g: Game, into?: Snap): Snap {
     ts.interval = train.interval;
     ts.timer = train.timer;
     ts.t = train.t;
+    ts.diving = train.diving;
   }
 
   snap.topLimit = g.topLimit;
@@ -666,6 +1032,7 @@ export function takeSnapshot(g: Game, into?: Snap): Snap {
 export function restoreSnapshot(g: Game, snap: Snap): void {
   g.rng.restore(snap.rngState);
   g.field.cells.set(snap.cells);
+  g.field.flags.set(snap.flags);
 
   for (let i = 0; i < g.slots.length; i++) {
     const s = snap.slots[i];
@@ -674,12 +1041,36 @@ export function restoreSnapshot(g: Game, snap: Snap): void {
     live.input = s.input;
     live.prevInput = s.prevInput;
     live.fireCooldown = s.fireCooldown;
+    copyPowers(s.powers, live.powers);
   }
 
   g.bullets.length = 0;
   for (let i = 0; i < snap.bulletCount; i++) {
-    g.bullets.push({ x: snap.bullets[i].x, y: snap.bullets[i].y, owner: snap.bullets[i].owner });
+    const b = snap.bullets[i];
+    g.bullets.push({ x: b.x, y: b.y, owner: b.owner, vx: b.vx, pierce: b.pierce });
   }
+
+  g.enemies.length = 0;
+  for (let i = 0; i < snap.enemyCount; i++) {
+    const e = snap.enemies[i];
+    g.enemies.push({ kind: e.kind, x: e.x, y: e.y, vx: e.vx, vy: e.vy, hp: e.hp, timer: e.timer });
+  }
+
+  g.coins.length = 0;
+  for (let i = 0; i < snap.coinCount; i++) {
+    const c = snap.coins[i];
+    g.coins.push({ kind: c.kind, x: c.x, y: c.y, vx: c.vx, vy: c.vy, life: c.life });
+  }
+
+  g.falling.length = 0;
+  for (let i = 0; i < snap.fallingCount; i++) {
+    g.falling.push({ x: snap.falling[i].x, y: snap.falling[i].y });
+  }
+
+  g.spawner.spiderTimer = snap.spawn.spider;
+  g.spawner.fleaTimer = snap.spawn.flea;
+  g.spawner.scorpionTimer = snap.spawn.scorpion;
+  g.spawner.saucerTimer = snap.spawn.saucer;
 
   g.trains.length = 0;
   for (let i = 0; i < snap.trainCount; i++) {
@@ -696,6 +1087,7 @@ export function restoreSnapshot(g: Game, snap: Snap): void {
     train.dirY = ts.dirY;
     train.timer = ts.timer;
     train.t = ts.t;
+    train.diving = ts.diving;
     g.trains.push(train);
   }
 
@@ -737,14 +1129,50 @@ export function fingerprint(g: Game): number {
     mix(Math.round(slot.player.x * 1e6));
     mix(Math.round(slot.player.y * 1e6));
     mix(Math.round(slot.fireCooldown * 1e6));
+    const p = slot.powers;
+    mix(Math.round(p.rapid * 1e6));
+    mix(Math.round(p.curve * 1e6));
+    mix(Math.round(p.shield * 1e6));
+    mix(Math.round(p.pierce * 1e6));
+    mix(Math.round(p.multiplier * 1e6));
+    mix(Math.round(p.multiplierTime * 1e6));
+    mix(p.lock ? 1 : 0);
   }
   for (const b of g.bullets) {
     mix(Math.round(b.x * 1e6));
     mix(Math.round(b.y * 1e6));
     mix(b.owner);
+    mix(Math.round(b.vx * 1e6));
+    mix(b.pierce ? 1 : 0);
   }
+  for (const e of g.enemies) {
+    mix(e.kind);
+    mix(Math.round(e.x * 1e6));
+    mix(Math.round(e.y * 1e6));
+    mix(Math.round(e.vx * 1e6));
+    mix(Math.round(e.vy * 1e6));
+    mix(e.hp);
+    mix(Math.round(e.timer * 1e6));
+  }
+  for (const c of g.coins) {
+    mix(c.kind);
+    mix(Math.round(c.x * 1e6));
+    mix(Math.round(c.y * 1e6));
+    mix(Math.round(c.vx * 1e6));
+    mix(Math.round(c.vy * 1e6));
+    mix(Math.round(c.life * 1e6));
+  }
+  for (const f of g.falling) {
+    mix(Math.round(f.x * 1e6));
+    mix(Math.round(f.y * 1e6));
+  }
+  mix(Math.round(g.spawner.spiderTimer * 1e6));
+  mix(Math.round(g.spawner.fleaTimer * 1e6));
+  mix(Math.round(g.spawner.scorpionTimer * 1e6));
+  mix(Math.round(g.spawner.saucerTimer * 1e6));
   for (const train of g.trains) {
     mix(train.dirY);
+    mix(train.diving ? 1 : 0);
     mix(Math.round(train.timer * 1e6));
     for (const seg of train.segments) {
       mix(seg.col);
@@ -758,6 +1186,7 @@ export function fingerprint(g: Game): number {
     if (cells[i] !== 0) {
       mix(i);
       mix(cells[i]);
+      mix(g.field.flags[i]);
     }
   }
   for (const key of EVENT_KEYS) mix(g.events[key]);

@@ -24,7 +24,16 @@ export type SoundSlot =
   | "death"
   | "levelClear"
   | "extraLife"
-  | "start";
+  | "start"
+  | "spiderKill"
+  | "fleaKill"
+  | "scorpionKill"
+  | "saucerKill"
+  | "coinDrop"
+  | "coinPickup"
+  | "coinMiss"
+  | "shieldSave"
+  | "bonusShroom";
 
 export const SOUND_SLOTS: { slot: SoundSlot; label: string }[] = [
   { slot: "shoot", label: "Shoot" },
@@ -36,6 +45,15 @@ export const SOUND_SLOTS: { slot: SoundSlot; label: string }[] = [
   { slot: "levelClear", label: "Level cleared" },
   { slot: "extraLife", label: "Extra life" },
   { slot: "start", label: "Game start" },
+  { slot: "spiderKill", label: "Spider destroyed" },
+  { slot: "fleaKill", label: "Flea destroyed" },
+  { slot: "scorpionKill", label: "Scorpion destroyed" },
+  { slot: "saucerKill", label: "Saucer destroyed" },
+  { slot: "coinDrop", label: "Coin appears" },
+  { slot: "coinPickup", label: "Coin collected" },
+  { slot: "coinMiss", label: "Coin lost" },
+  { slot: "shieldSave", label: "Shield absorbs a hit" },
+  { slot: "bonusShroom", label: "Bonus mushroom" },
 ];
 
 /** The stock soundtrack: presets from the synth, nudged to fit the game. */
@@ -72,6 +90,33 @@ export function defaultSound(slot: SoundSlot): SfxDefinition {
       return normalizeSfx({ ...createSfxPreset("Coin"), name: "Extra life", volume: 0.5 });
     case "start":
       return normalizeSfx({ ...createSfxPreset("Coin"), name: "Game start", frequency: 660, volume: 0.4 });
+    case "spiderKill":
+      return normalizeSfx({ ...createSfxPreset("Hit"), name: "Spider destroyed", frequency: 300, decay: 0.22, volume: 0.45 });
+    case "fleaKill":
+      return normalizeSfx({ ...createSfxPreset("Hit"), name: "Flea destroyed", frequency: 720, decay: 0.14, volume: 0.4 });
+    case "scorpionKill":
+      return normalizeSfx({ ...createSfxPreset("Explosion"), name: "Scorpion destroyed", decay: 0.3, volume: 0.48 });
+    case "saucerKill":
+      return normalizeSfx({ ...createSfxPreset("Powerup"), name: "Saucer destroyed", frequency: 900, volume: 0.5 });
+    case "coinDrop":
+      return normalizeSfx({ ...createSfxPreset("Blip"), name: "Coin appears", frequency: 1100, volume: 0.26 });
+    case "coinPickup":
+      return normalizeSfx({ ...createSfxPreset("Coin"), name: "Coin collected", frequency: 880, volume: 0.5 });
+    // A falling raspberry: the coin you did not go and get.
+    case "coinMiss":
+      return normalizeSfx({
+        ...createSfxPreset("Buzzer"),
+        name: "Coin lost",
+        frequency: 260,
+        slide: -2.2,
+        sustain: 0.03,
+        decay: 0.22,
+        volume: 0.3,
+      });
+    case "shieldSave":
+      return normalizeSfx({ ...createSfxPreset("Powerup"), name: "Shield absorbs a hit", frequency: 520, volume: 0.5 });
+    case "bonusShroom":
+      return normalizeSfx({ ...createSfxPreset("Coin"), name: "Bonus mushroom", frequency: 1320, volume: 0.5 });
   }
 }
 
@@ -110,6 +155,15 @@ const EVENT_TO_SLOT: [keyof GameEvents, SoundSlot][] = [
   ["levelClears", "levelClear"],
   ["extraLives", "extraLife"],
   ["starts", "start"],
+  ["spiderKills", "spiderKill"],
+  ["fleaKills", "fleaKill"],
+  ["scorpionKills", "scorpionKill"],
+  ["saucerKills", "saucerKill"],
+  ["coinDrops", "coinDrop"],
+  ["coinPickups", "coinPickup"],
+  ["coinMisses", "coinMiss"],
+  ["shieldSaves", "shieldSave"],
+  ["bonusShrooms", "bonusShroom"],
 ];
 
 export function createSoundBank(options: { report?: ReportSink } = {}): SoundBank {

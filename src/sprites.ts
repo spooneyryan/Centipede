@@ -17,6 +17,11 @@ export const SPRITE_SLOT_LABELS: Record<SpriteSlot, string> = {
   player: "Blaster (P1)",
   player2: "Blaster (P2)",
   bullet: "Bullet",
+  spider: "Spider",
+  flea: "Flea",
+  scorpion: "Scorpion",
+  saucer: "Saucer",
+  coin: "Power-up coin",
 };
 
 interface SpriteDoc {
