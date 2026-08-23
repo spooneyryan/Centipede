@@ -70,6 +70,14 @@ import {
 import { SOUND_SLOTS, createSoundBank } from "./sounds";
 import { SPRITE_SLOT_LABELS, createSpriteBank } from "./sprites";
 import { createStudioHost } from "./ui/studioHost";
+import {
+  DEFAULT_TUNING,
+  TUNING_FIELDS,
+  TUNING_GROUPS,
+  isDefaultTuning,
+  normalizeTuning,
+  type Tuning,
+} from "./tuning";
 import { drawSpriteAsset } from "@ccllc/studio/render";
 
 const GAME_VERSION = "1.0.0";
@@ -77,7 +85,7 @@ const GAME_VERSION = "1.0.0";
 // must carry everything that defines behaviour. Bump it whenever the
 // simulation changes, or a cached page will pair with a new build and the two
 // will quietly play different games.
-const COOP_TOKEN = "rustipede-v1";
+const COOP_TOKEN = "rustipede-v2"; // v2: tuning is a value, carried in the payload
 
 const el = <T extends HTMLElement>(id: string): T => {
   const found = document.getElementById(id);
@@ -115,7 +123,7 @@ const settings = defineSettings<{
   telemetryEnabled: boolean;
   telemetryEndpoint: string;
   windowBounds: string;
-}>({
+} & Record<`tune_${keyof Tuning}`, number>>({
   namespace: "rustipede",
   version: 1,
   fields: {
@@ -130,9 +138,26 @@ const settings = defineSettings<{
     telemetryEnabled: { type: "boolean", default: false },
     telemetryEndpoint: { type: "string", default: "", maxLength: 120 },
     windowBounds: { type: "string", default: "", maxLength: 11 },
+    // Every tunable, declared from the same table the UI renders from — a
+    // range cannot drift between the slider and the sanitizer.
+    ...Object.fromEntries(
+      TUNING_FIELDS.map((f) => [
+        `tune_${f.key}`,
+        { type: "number" as const, min: f.min, max: f.max, step: f.step, default: DEFAULT_TUNING[f.key] },
+      ]),
+    ),
   },
   report,
 });
+
+/** The tuning as the settings store currently holds it. Read at the moment a
+ * run BEGINS and then frozen into that run — never consulted mid-game, or two
+ * co-op machines would diverge the instant one player moved a slider. */
+function settingsTuning(): Tuning {
+  return normalizeTuning(
+    Object.fromEntries(TUNING_FIELDS.map((f) => [f.key, settings.get(`tune_${f.key}`)])),
+  );
+}
 
 // --- Telemetry: off unless switched on, and collects nothing identifying. --
 const perf = createPerformanceMonitor();
@@ -348,11 +373,13 @@ function localInput(): Input {
 function startSoloRun(layout: LevelDoc | null): void {
   pendingLayout = layout;
   const seed = (Math.random() * 0x7fffffff) | 0; // minted once, outside the sim
+  const tuning = settingsTuning(); // read once, here, and frozen into the run
   game = new Game(seed, {
     players: 1,
     layout: layout ? layout.cells : null,
     startLevel: layout ? layout.startLevel : 1,
     highScore: storedHigh(),
+    tuning,
   });
   game.start();
   recorder = new ReplayRecorder(
@@ -361,6 +388,7 @@ function startSoloRun(layout: LevelDoc | null): void {
     layout ? layout.startLevel : 1,
     storedHigh(),
     layout ? [...layout.cells] : null,
+    tuning,
   );
   recorderGame = game;
   runOverReported = false;
@@ -403,6 +431,10 @@ interface CoopPayload {
   layout: number[] | null;
   startLevel: number;
   highScore: number;
+  /** The HOST's tuning. The joiner's own sliders are ignored for the match —
+   * two machines running different rules is precisely the desync lockstep
+   * exists to rule out. */
+  tuning: Tuning;
 }
 
 const coop = createCoop<Input>({
@@ -421,11 +453,14 @@ const coop = createCoop<Input>({
     },
     start: (ctx) => {
       const payload = (ctx.payload ?? {}) as Partial<CoopPayload>;
+      // normalizeTuning also covers a peer on an older build that sent none.
+      const matchTuning = normalizeTuning(payload.tuning);
       game = new Game(ctx.seed >>> 0, {
         players: 2,
         layout: Array.isArray(payload.layout) ? payload.layout : null,
         startLevel: typeof payload.startLevel === "number" ? payload.startLevel : 1,
         highScore: typeof payload.highScore === "number" ? payload.highScore : 0,
+        tuning: matchTuning,
       });
       game.start();
       mode = "coop";
@@ -435,6 +470,7 @@ const coop = createCoop<Input>({
         typeof payload.startLevel === "number" ? payload.startLevel : 1,
         typeof payload.highScore === "number" ? payload.highScore : 0,
         Array.isArray(payload.layout) ? payload.layout : null,
+        matchTuning,
       );
       recorderGame = game;
       runOverReported = false;
@@ -533,9 +569,15 @@ const lobby = {
 
 function openLobby(): void {
   lobby.panel.classList.remove("hidden");
-  lobby.level.textContent = pendingLayout
+  const field = pendingLayout
     ? `Hosting will use your field "${pendingLayout.name}".`
     : "Hosting uses a classic scattered field.";
+  const rules = isDefaultTuning(settingsTuning())
+    ? "Default rules."
+    : "Your custom tuning travels to whoever joins.";
+  lobby.level.textContent = `${field} ${
+    "Whoever hosts sets the rules for both players."
+  } ${rules}`;
 }
 
 lobby.host.addEventListener("click", () => {
@@ -547,6 +589,7 @@ lobby.host.addEventListener("click", () => {
       layout: pendingLayout ? [...pendingLayout.cells] : null,
       startLevel: pendingLayout ? pendingLayout.startLevel : 1,
       highScore: storedHigh(),
+      tuning: settingsTuning(),
     } satisfies CoopPayload,
     seed: (Math.random() * 0x7fffffff) | 0,
   });
@@ -806,6 +849,8 @@ const settingsForm = el<HTMLFormElement>("settingsForm");
 const skinSelect = el<HTMLSelectElement>("skinSelect");
 const skinFile = el<HTMLInputElement>("skinFile");
 const skinStatus = el<HTMLElement>("skinStatus");
+const tuningRows = el<HTMLElement>("tuningRows");
+const tuningStatus = el<HTMLElement>("tuningStatus");
 
 const saySkin = (text: string, kind: "info" | "error"): void => {
   skinStatus.textContent = text;
@@ -826,6 +871,81 @@ function populateSkinSelect(): void {
   if (storage.getItem(IMPORTED_SKIN_KEY)) add("imported", "Imported skin");
 }
 
+/** Slider per knob, grouped, built from TUNING_FIELDS — the same table the
+ * settings schema declared its ranges from. Live values are kept in the form
+ * itself; `fromFormData` collects them on Save like every other field. */
+function buildTuningRows(): void {
+  if (tuningRows.childElementCount > 0) return; // built once
+  for (const group of TUNING_GROUPS) {
+    const heading = document.createElement("p");
+    heading.className = "tune-group";
+    heading.textContent = group;
+    tuningRows.append(heading);
+
+    for (const field of TUNING_FIELDS.filter((f) => f.group === group)) {
+      const row = document.createElement("div");
+      row.className = "tune-row";
+      row.dataset.key = field.key;
+
+      const label = document.createElement("label");
+      label.htmlFor = `tune_${field.key}`;
+      label.innerHTML = `${field.label}<span class="tune-hint">${field.hint}</span>`;
+
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.id = `tune_${field.key}`;
+      slider.name = `tune_${field.key}`;
+      slider.min = String(field.min);
+      slider.max = String(field.max);
+      slider.step = String(field.step);
+
+      const readout = document.createElement("span");
+      readout.className = "tune-value";
+
+      const decimals = field.step >= 1 ? 0 : String(field.step).split(".")[1].length;
+      const paint = () => {
+        const value = Number(slider.value);
+        readout.textContent = `${value.toFixed(decimals)}${field.unit ?? ""}`;
+        row.classList.toggle("changed", value !== DEFAULT_TUNING[field.key]);
+      };
+      slider.addEventListener("input", () => {
+        paint();
+        refreshTuningStatus();
+      });
+      // Repaint when the form is repopulated from the store.
+      slider.addEventListener("change", paint);
+      (slider as HTMLInputElement & { repaint?: () => void }).repaint = paint;
+
+      row.append(label, slider, readout);
+      tuningRows.append(row);
+    }
+  }
+}
+
+/** Says whether what is on screen differs from the original game, and warns
+ * that it only takes effect on the next run rather than the one in progress. */
+function refreshTuningStatus(): void {
+  const shown = normalizeTuning(
+    Object.fromEntries(
+      TUNING_FIELDS.map((f) => [
+        f.key,
+        Number((settingsForm.elements.namedItem(`tune_${f.key}`) as HTMLInputElement).value),
+      ]),
+    ),
+  );
+  if (isDefaultTuning(shown)) {
+    tuningStatus.textContent = "Matching the original game.";
+    return;
+  }
+  const changed = TUNING_FIELDS.filter((f) => shown[f.key] !== DEFAULT_TUNING[f.key]).length;
+  const live = mode === "coop" && coop.running;
+  tuningStatus.textContent =
+    `${changed} setting${changed === 1 ? "" : "s"} changed from the original. ` +
+    (live
+      ? "The match in progress keeps the host's rules; this applies to the next one."
+      : "Takes effect on your next run.");
+}
+
 function populateSettingsForm(): void {
   const all = settings.all();
   for (const name of settings.names) {
@@ -839,12 +959,15 @@ function populateSettingsForm(): void {
       field instanceof HTMLSelectElement
     ) {
       field.value = String(value);
+      (field as HTMLInputElement & { repaint?: () => void }).repaint?.();
     }
   }
+  refreshTuningStatus();
 }
 
 el<HTMLButtonElement>("btnSettings").addEventListener("click", () => {
   populateSkinSelect();
+  buildTuningRows();
   populateSettingsForm();
   saySkin("", "info");
   settingsDialog.showModal();
@@ -858,6 +981,15 @@ settingsForm.addEventListener("submit", (e) => {
   // The FORM ELEMENT, not FormData: FormData cannot tell an unchecked
   // checkbox from a field the dialog does not carry.
   settings.patch(settings.fromFormData(settingsForm as unknown as Record<string, unknown>));
+});
+
+el<HTMLButtonElement>("tuningReset").addEventListener("click", () => {
+  for (const field of TUNING_FIELDS) {
+    const slider = settingsForm.elements.namedItem(`tune_${field.key}`) as HTMLInputElement;
+    slider.value = String(DEFAULT_TUNING[field.key]);
+    (slider as HTMLInputElement & { repaint?: () => void }).repaint?.();
+  }
+  refreshTuningStatus();
 });
 
 el<HTMLButtonElement>("skinImport").addEventListener("click", () => skinFile.click());

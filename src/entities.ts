@@ -19,10 +19,10 @@ export class Player {
   }
 
   /** Move by a direction vector, at the blaster's own speed. */
-  steer(dx: number, dy: number, dt: number): void {
+  steer(dx: number, dy: number, dt: number, speed: number = PLAYER_SPEED): void {
     const len = Math.sqrt(dx * dx + dy * dy);
     if (len > 0) {
-      const step = (PLAYER_SPEED * dt) / len;
+      const step = (speed * dt) / len;
       this.x += dx * step;
       this.y += dy * step;
       this.confine();

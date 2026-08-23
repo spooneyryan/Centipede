@@ -12,8 +12,9 @@
 // of a brand new train. Shooting the head therefore just promotes the next
 // segment, which is the behaviour the paper calls out explicitly.
 
-import { CELL, CENTIPEDE_LEN, COLS, TOP_ROW } from "./config";
+import { CELL, COLS, TOP_ROW } from "./config";
 import type { MushroomField } from "./mushrooms";
+import { DEFAULT_TUNING, type Tuning } from "./tuning";
 
 /** One link of a centipede. Positions are grid cells; `prevCol`/`prevRow` is
  * where the link was on the previous tick, which lets the renderer interpolate
@@ -143,17 +144,20 @@ export class Train {
 
 /** Seconds per cell for a train of `len` segments on `level`. Lone heads scuttle
  * noticeably faster than a full-length centipede, as in the arcade original. */
-export function stepInterval(level: number, len: number): number {
-  const base = 8.5 + Math.max(level - 1, 0) * 1.15;
-  const cellsPerSecond = Math.min(base * (len <= 1 ? 1.45 : 1), 26);
+export function stepInterval(level: number, len: number, tuning: Tuning = DEFAULT_TUNING): number {
+  const base = tuning.centipedeSpeed + Math.max(level - 1, 0) * tuning.centipedeLevelGain;
+  const cellsPerSecond = Math.min(
+    base * (len <= 1 ? tuning.loneHeadBoost : 1),
+    tuning.centipedeMaxSpeed,
+  );
   return 1 / cellsPerSecond;
 }
 
 /** Build the wave of centipedes for a level: one long train, plus one extra lone
  * head per level beyond the first. */
-export function spawnWave(level: number): Train[] {
+export function spawnWave(level: number, tuning: Tuning = DEFAULT_TUNING): Train[] {
   const extraHeads = Math.min(Math.max(level - 1, 0), 6);
-  const mainLen = Math.max(CENTIPEDE_LEN - extraHeads, 1);
+  const mainLen = Math.max(tuning.centipedeLength - extraHeads, 1);
 
   const trains: Train[] = [];
 
@@ -163,13 +167,13 @@ export function spawnWave(level: number): Train[] {
   for (let i = 0; i < mainLen; i++) {
     segments.push(new Segment(mainLen - 1 - i, TOP_ROW, 1));
   }
-  trains.push(new Train(segments, stepInterval(level, mainLen)));
+  trains.push(new Train(segments, stepInterval(level, mainLen, tuning)));
 
   // Lone heads spread across the right-hand side, walking left to meet it.
   for (let i = 0; i < extraHeads; i++) {
     const col = COLS - 3 - i * 4;
     trains.push(
-      new Train([new Segment(Math.max(col, mainLen + 1), TOP_ROW, -1)], stepInterval(level, 1)),
+      new Train([new Segment(Math.max(col, mainLen + 1), TOP_ROW, -1)], stepInterval(level, 1, tuning)),
     );
   }
 

@@ -98,6 +98,16 @@
     </div>
     <p id="skinStatus" class="status" data-kind="info"></p>
     <label class="field-row">Player name <input name="playerName" type="text" maxlength="12" placeholder="shown in lobbies"></label>
+    <h3 class="section">Game tuning</h3>
+    <p class="hint">Changes apply to the next run you start. When you host co-op,
+      your tuning travels to the other player — whoever hosts sets the rules.</p>
+    <div id="tuningRows"></div>
+    <div class="button-row">
+      <button id="tuningReset" type="button">Reset tuning to the original game</button>
+    </div>
+    <p id="tuningStatus" class="hint"></p>
+
+    <h3 class="section">Privacy</h3>
     <label class="field-row">Share anonymous telemetry <input name="telemetryEnabled" type="checkbox"></label>
     <label class="field-row">Telemetry endpoint <input name="telemetryEndpoint" type="url" placeholder="https://&hellip; (optional)"></label>
     <div class="button-row">

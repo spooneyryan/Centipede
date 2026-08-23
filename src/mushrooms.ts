@@ -24,9 +24,13 @@ export type Hit = (typeof Hit)[keyof typeof Hit];
 export class MushroomField {
   /** Remaining hit points per cell, `0` meaning "no mushroom". */
   cells: Uint8Array;
+  /** Hit points a full-health mushroom has — tunable, so the field carries it
+   * rather than reading a module constant. Never changes during a run. */
+  readonly fullHp: number;
 
-  constructor() {
+  constructor(fullHp: number = SHROOM_HP) {
     this.cells = new Uint8Array(COLS * ROWS);
+    this.fullHp = Math.min(Math.max(Math.round(fullHp), 1), SHROOM_HP);
   }
 
   private static index(col: number, row: number): number {
@@ -48,7 +52,7 @@ export class MushroomField {
   /** Plant a full-health mushroom, e.g. where a centipede segment died. */
   plant(col: number, row: number): void {
     const i = MushroomField.index(col, row);
-    if (i >= 0) this.cells[i] = SHROOM_HP;
+    if (i >= 0) this.cells[i] = this.fullHp;
   }
 
   clear(): void {
@@ -90,8 +94,8 @@ export class MushroomField {
   repairAll(): number {
     let repaired = 0;
     for (let i = 0; i < this.cells.length; i++) {
-      if (this.cells[i] > 0 && this.cells[i] < SHROOM_HP) {
-        this.cells[i] = SHROOM_HP;
+      if (this.cells[i] > 0 && this.cells[i] < this.fullHp) {
+        this.cells[i] = this.fullHp;
         repaired += 1;
       }
     }

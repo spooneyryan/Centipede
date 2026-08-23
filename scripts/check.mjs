@@ -50,6 +50,9 @@ const {
   STATE_DYING,
   STATE_GAME_OVER,
   STATE_LEVEL_CLEAR,
+  DEFAULT_TUNING,
+  TUNING_FIELDS,
+  normalizeTuning,
 } = sim;
 
 let failures = 0;
@@ -79,8 +82,8 @@ const joinIn = (t) => {
   return packInput(bits, { x: 960 - wave(t / 180) * 700, y: 1030 });
 };
 
-function freshGame(seed, players) {
-  const g = new Game(seed, { players });
+function freshGame(seed, players, tuning) {
+  const g = new Game(seed, { players, tuning });
   g.start();
   return g;
 }
@@ -122,6 +125,50 @@ function freshGame(seed, players) {
   restoreSnapshot(g, snap);
   check("the perturbation fixture had bullets to drop", g.bullets.length > 0, `${g.bullets.length}`);
   perturb("a dropped bullet", (x) => { x.bullets.pop(); });
+}
+
+// --- 0b. Tuning is a value the simulation actually obeys. -------------------
+// Exposed in Settings, so it must (a) change the game, (b) stay identical for
+// the life of a run, and (c) make two machines that disagree fail LOUDLY
+// rather than drift apart quietly.
+{
+  const play = (tuning, ticks = 600) => {
+    const g = freshGame(31337, 2, tuning);
+    for (let t = 0; t < ticks; t++) g.step([hostIn(t), joinIn(t)]);
+    return g;
+  };
+
+  const base = play(undefined);
+  check("the default tuning is the original game", fingerprint(base) === fingerprint(play(DEFAULT_TUNING)));
+
+  // Every knob must be reachable from the simulation. A field that is exposed
+  // in the UI but wired to nothing is worse than no field at all.
+  const NUDGE = {
+    fireCooldown: 0.3, maxBullets: 1, bulletSpeed: 900, playerSpeed: 260,
+    centipedeSpeed: 4, centipedeLevelGain: 3, centipedeMaxSpeed: 6, loneHeadBoost: 2.5,
+    centipedeLength: 6, shroomHp: 1, shroomStartCount: 20, shroomMinCount: 10,
+    lives: 5, extraLifeEvery: 2000,
+  };
+  const baseline = fingerprint(base);
+  for (const field of TUNING_FIELDS) {
+    const value = NUDGE[field.key];
+    check(
+      `the simulation obeys ${field.label.toLowerCase()}`,
+      fingerprint(play({ ...DEFAULT_TUNING, [field.key]: value })) !== baseline,
+      `${field.key} = ${value} changed nothing`,
+    );
+  }
+
+  // A mismatch has to be caught by the fingerprint on the FIRST settled tick,
+  // not discovered later once the two games have visibly parted company.
+  const a = freshGame(31337, 2, DEFAULT_TUNING);
+  const b = freshGame(31337, 2, { ...DEFAULT_TUNING, bulletSpeed: 2000 });
+  check("mismatched tuning is caught on tick 0", fingerprint(a) !== fingerprint(b));
+
+  // Out-of-range junk from a peer or a stale file must clamp, never throw.
+  const junk = normalizeTuning({ fireCooldown: -5, maxBullets: 99, centipedeSpeed: "fast", nonsense: 1 });
+  check("a hostile tuning clamps into range", junk.fireCooldown >= 0.02 && junk.maxBullets <= 4);
+  check("an unparseable value falls back to the default", junk.centipedeSpeed === DEFAULT_TUNING.centipedeSpeed);
 }
 
 // --- 1. Determinism: same seed + inputs, twice, same fingerprint. -----------

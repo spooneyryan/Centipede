@@ -169,3 +169,32 @@ dialog::backdrop { background: rgba(2, 4, 8, 0.65); }
 .asset-row .asset-label { flex: 1; font-size: 13px; }
 .asset-row .asset-state { font-size: 11px; color: var(--game-text-muted, #6b7c96); }
 .asset-row canvas { background: var(--game-surface-canvas, #05060a); border: 1px solid var(--game-border-default, #1b2436); border-radius: 4px; }
+
+/* Settings sections and the tuning sliders. */
+dialog h3.section {
+  margin: 18px 0 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--game-border-default, #1b2436);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--game-text-muted, #6b7c96);
+}
+.tune-group {
+  margin: 10px 0 4px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--game-action-primary, #57d977);
+}
+.tune-row { display: grid; grid-template-columns: 1fr 120px 64px; gap: 8px; align-items: center; margin: 5px 0; }
+.tune-row label { font-size: 13px; }
+.tune-row .tune-hint { display: block; font-size: 11px; color: var(--game-text-muted, #6b7c96); }
+.tune-row input[type="range"] { width: 100%; }
+.tune-row .tune-value {
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--game-text-primary, #cfe3ff);
+}
+.tune-row.changed .tune-value { color: var(--game-action-primary, #57d977); font-weight: 600; }

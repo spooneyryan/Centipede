@@ -19,6 +19,7 @@ import {
 } from "@ccllc/arcade/core";
 import { COLS, ROWS, SHROOM_HP } from "./config";
 import { DT, Game, type Input } from "./sim";
+import { DEFAULT_TUNING, normalizeTuning, type Tuning } from "./tuning";
 
 export interface ReplayDoc {
   format: string;
@@ -30,6 +31,9 @@ export interface ReplayDoc {
   startLevel: number;
   highScore: number;
   layout: number[] | null;
+  /** The tuning the run was played under. A replay recorded with a faster
+   * bullet re-simulates wrong without it. */
+  tuning: Tuning;
   /** `[tick, seat0, seat1]`, one entry per change — a held key is one entry. */
   frames: [number, number, number][];
   /** Ticks the recording covers. */
@@ -66,6 +70,7 @@ export function createReplayFormat(options: { report?: ReportSink } = {}): Docum
         startLevel: boundedInteger(raw?.startLevel, 1, 1, 50),
         highScore: boundedInteger(raw?.highScore, 0, 0, 1e9),
         layout,
+        tuning: normalizeTuning(raw?.tuning),
         frames,
         ticks: boundedInteger(raw?.ticks, 0, 0, 1e9),
       };
@@ -86,6 +91,7 @@ export class ReplayRecorder {
     readonly startLevel: number,
     readonly highScore: number,
     readonly layout: number[] | null,
+    readonly tuning: Tuning = DEFAULT_TUNING,
   ) {}
 
   capture(tick: number, inputs: Input[]): void {
@@ -117,6 +123,7 @@ export class ReplayRecorder {
       startLevel: this.startLevel,
       highScore: this.highScore,
       layout: this.layout,
+      tuning: this.tuning,
       frames,
       ticks: this.p0.length,
     };
@@ -137,6 +144,7 @@ export class ReplayPlayer {
       startLevel: doc.startLevel,
       layout: doc.layout,
       highScore: doc.highScore,
+      tuning: doc.tuning,
     });
     // Recordings begin at the moment the run started, so the replayed game
     // starts the same way before its first tick.

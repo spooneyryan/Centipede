@@ -14,25 +14,18 @@
 import {
   BOTTOM_ROW,
   BOTTOM_TRAP_ROWS,
-  BULLET_COOLDOWN,
   BULLET_HIT_RADIUS,
-  BULLET_SPEED,
   CELL,
   COLS,
   DYING_TIME,
-  EXTRA_LIFE_EVERY,
   LEVEL_CLEAR_TIME,
-  MAX_BULLETS,
   PLAYER_HIT_RADIUS,
-  PLAYER_LIVES,
   PLAYER_TOP_ROW,
   ROWS,
   SCORE_HEAD,
   SCORE_BODY,
   SCORE_MUSHROOM,
   SCORE_MUSHROOM_REPAIR,
-  SHROOM_MIN_COUNT,
-  SHROOM_START_COUNT,
   TOP_ROW,
   cellAt,
   cellCenter,
@@ -41,6 +34,7 @@ import { Segment, Train, spawnWave, stepInterval } from "./centipede";
 import { Player, type Bullet } from "./entities";
 import { Hit, MushroomField } from "./mushrooms";
 import { Rng } from "./rng";
+import { DEFAULT_TUNING, normalizeTuning, tuningHash, type Tuning } from "./tuning";
 
 /** Ticks per second. A tick is the unit of time; the constant lives here, not
  * in the host. */
@@ -154,6 +148,10 @@ export interface GameOptions {
   /** Carried-over high score shown on the HUD. Solo only — in co-op both
    * machines must agree, so the host's value rides in the payload. */
   highScore?: number;
+  /** How the game feels. Fixed for the life of the run: in co-op it comes
+   * from the host's payload, in a replay from the document. Never read from a
+   * live settings store mid-run, or two machines would drift apart. */
+  tuning?: Partial<Tuning>;
 }
 
 interface PlayerSlot {
@@ -192,14 +190,16 @@ export class Game {
   readonly playerCount: number;
   readonly startLevel: number;
   readonly layout: Uint8Array | null;
+  readonly tuning: Tuning;
 
   constructor(seed: number, options: GameOptions = {}) {
     this.playerCount = options.players === 2 ? 2 : 1;
     this.startLevel = Math.max(1, Math.floor(options.startLevel ?? 1));
     this.layout = options.layout ? Uint8Array.from(options.layout as ArrayLike<number>) : null;
+    this.tuning = options.tuning ? normalizeTuning({ ...DEFAULT_TUNING, ...options.tuning }) : DEFAULT_TUNING;
 
     this.rng = new Rng(seed >>> 0);
-    this.field = new MushroomField();
+    this.field = new MushroomField(this.tuning.shroomHp);
     this.slots = [];
     this.bullets = [];
     this.trains = [];
@@ -207,9 +207,9 @@ export class Game {
     this.bottomLimit = BOTTOM_ROW;
     this.score = 0;
     this.highScore = Math.max(0, Math.floor(options.highScore ?? 0));
-    this.lives = PLAYER_LIVES;
+    this.lives = this.tuning.lives;
     this.level = this.startLevel;
-    this.nextExtraLife = EXTRA_LIFE_EVERY;
+    this.nextExtraLife = this.tuning.extraLifeEvery;
     this.state = STATE_ATTRACT;
     this.stateTimer = 0;
     this.tick = 0;
@@ -222,7 +222,7 @@ export class Game {
     // Seed a field and a centipede so the attract screen has something moving
     // behind the title — exactly the Rust constructor.
     this.seedField();
-    this.trains = spawnWave(this.startLevel);
+    this.trains = spawnWave(this.startLevel, this.tuning);
   }
 
   private spawnPlayer(index: number): Player {
@@ -237,16 +237,16 @@ export class Game {
     if (this.layout) {
       this.field.cells.set(this.layout.subarray(0, this.field.cells.length));
     } else {
-      this.field.scatter(this.rng, SHROOM_START_COUNT);
+      this.field.scatter(this.rng, this.tuning.shroomStartCount);
     }
   }
 
   /** Begin a new run from the attract or game-over screen. */
   start(): void {
     this.score = 0;
-    this.lives = PLAYER_LIVES;
+    this.lives = this.tuning.lives;
     this.level = this.startLevel;
-    this.nextExtraLife = EXTRA_LIFE_EVERY;
+    this.nextExtraLife = this.tuning.extraLifeEvery;
     this.field.clear();
     this.seedField();
     this.beginLevel();
@@ -313,9 +313,9 @@ export class Game {
       // drawn for; later levels top it back up like any other field.
       this.field.cells.set(this.layout.subarray(0, this.field.cells.length));
     } else {
-      this.field.scatter(this.rng, SHROOM_MIN_COUNT);
+      this.field.scatter(this.rng, this.tuning.shroomMinCount);
     }
-    this.trains = spawnWave(this.level);
+    this.trains = spawnWave(this.level, this.tuning);
     this.bullets.length = 0;
     for (let i = 0; i < this.slots.length; i++) {
       this.slots[i].player = this.spawnPlayer(i);
@@ -332,7 +332,7 @@ export class Game {
       this.state = STATE_GAME_OVER;
     } else {
       // The mushroom field survives the player, but the wave restarts.
-      this.trains = spawnWave(this.level);
+      this.trains = spawnWave(this.level, this.tuning);
       this.bullets.length = 0;
       for (let i = 0; i < this.slots.length; i++) {
         this.slots[i].player = this.spawnPlayer(i);
@@ -377,7 +377,7 @@ export class Game {
     const held = (bit: number) => (slot.input & bit) !== 0;
     const dx = (held(INPUT_RIGHT) ? 1 : 0) - (held(INPUT_LEFT) ? 1 : 0);
     const dy = (held(INPUT_DOWN) ? 1 : 0) - (held(INPUT_UP) ? 1 : 0);
-    slot.player.steer(dx, dy, dt);
+    slot.player.steer(dx, dy, dt, this.tuning.playerSpeed);
   }
 
   private fire(slot: PlayerSlot, dt: number): void {
@@ -385,10 +385,10 @@ export class Game {
     const owner = this.slots.indexOf(slot);
     let own = 0;
     for (const b of this.bullets) if (b.owner === owner) own += 1;
-    if ((slot.input & INPUT_FIRE) !== 0 && slot.fireCooldown === 0 && own < MAX_BULLETS) {
+    if ((slot.input & INPUT_FIRE) !== 0 && slot.fireCooldown === 0 && own < this.tuning.maxBullets) {
       const [x, y] = slot.player.muzzle();
       this.bullets.push({ x, y, owner });
-      slot.fireCooldown = BULLET_COOLDOWN;
+      slot.fireCooldown = this.tuning.fireCooldown;
       this.events.shots += 1;
     }
   }
@@ -397,7 +397,7 @@ export class Game {
    * swept forward in sub-steps no larger than half a cell. */
   private updateBullets(dt: number): void {
     if (this.bullets.length === 0) return;
-    const distance = BULLET_SPEED * dt;
+    const distance = this.tuning.bulletSpeed * dt;
     const steps = Math.max(Math.ceil(distance / (CELL * 0.4)), 1);
     const step = distance / steps;
     const ceiling = TOP_ROW * CELL;
@@ -472,11 +472,11 @@ export class Game {
       this.trains.splice(trainIndex, 1);
     } else {
       const len = this.trains[trainIndex].length;
-      this.trains[trainIndex].interval = stepInterval(level, len);
+      this.trains[trainIndex].interval = stepInterval(level, len, this.tuning);
     }
 
     if (tail.length > 0) {
-      const train = new Train(tail, stepInterval(level, tail.length));
+      const train = new Train(tail, stepInterval(level, tail.length, this.tuning));
       train.dirY = dirY;
       this.trains.push(train);
     }
@@ -516,7 +516,7 @@ export class Game {
     this.score += points;
     while (this.score >= this.nextExtraLife) {
       this.lives += 1;
-      this.nextExtraLife += EXTRA_LIFE_EVERY;
+      this.nextExtraLife += this.tuning.extraLifeEvery;
       this.events.extraLives += 1;
     }
     this.highScore = Math.max(this.highScore, this.score);
@@ -722,6 +722,7 @@ export function fingerprint(g: Game): number {
   };
 
   mix(g.tick);
+  mix(tuningHash(g.tuning));
   const rng = g.rng.save();
   mix(Number(rng & 0xffffffffn));
   mix(Number(rng >> 32n));

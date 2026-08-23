@@ -13,6 +13,7 @@ so it picks up everything the framework offers:
 | **Replays** | Deterministic ghosts: seed + inputs, a few KB. Save the last run (solo or co-op), watch it back, import/export as files. |
 | **Fullscreen** | `platform/presentation` — DOM fullscreen in a browser, the real window under the Electron wrapper, windowed size remembered in settings. |
 | **Settings** | `core/settings` — one schema, applied live: sound, volume, mouse control, grid, glow, skins, player name, telemetry opt-in. |
+| **Game tuning** | 14 sliders in Settings — fire rate, shots on screen, bullet and blaster speed, the whole centipede speed curve, mushroom toughness and density, lives, extra-life threshold. See below. |
 | **Skins** | The page chrome wears the skin contract's `--game-*` tokens. The canvas defaults to the original palette (pixel-perfect); pick a built-in skin, derive one from a hue, or import a skin file. |
 | **Controller** | `platform/input` — keyboard and gamepad behind one action map (d-pad/left stick move, A/RT fire, Start starts, button 8 pauses, Y restarts). |
 | **Telemetry** | `createTelemetry` — off by default, nothing identifying; every GameBase module reports into it (`loop.overrun`, `document.rejected`, …). Needs an endpoint configured in Settings. |
@@ -97,6 +98,38 @@ GameBase can change underneath the game. Re-run `npm run check` and
 `npm run typecheck` after pulling it — they are cheap and they are what would
 catch a breaking change.
 
+## Tuning the game
+
+Everything that changes how the game *feels* lives in [src/tuning.ts](src/tuning.ts)
+as one `Tuning` value with one `TUNING_FIELDS` table beside it. The settings
+schema, the sanitizer, and the sliders in the Settings dialog are all generated
+from that table, so a range cannot drift between what the UI offers and what
+the game accepts. The defaults are the original constants exactly — a fresh
+install plays the Rust game to the tick.
+
+`config.ts` keeps the **structural** constants (the 48x27 grid, the cell size,
+the row limits). Those are not tunable: the renderer and the level format are
+built around them.
+
+Three rules make this safe against the netcode:
+
+- **A tuning is frozen into a run when it starts.** `Game` takes one at
+  construction and reads it from there forever. Moving a slider mid-game does
+  nothing to the game in progress — which is the point, because in co-op the
+  alternative is two machines silently disagreeing about the rules.
+- **In co-op the host's tuning wins.** It rides in the match payload and the
+  joiner's own sliders are ignored for the duration, exactly as the level
+  layout already worked. The lobby says so before you host.
+- **A mismatch fails loudly.** The tuning is folded into the simulation
+  fingerprint, so two machines running different rules trip the desync alarm on
+  the first settled tick rather than drifting apart quietly.
+
+Replays carry their tuning too — a run recorded with a slow bullet replays with
+a slow bullet.
+
+`npm run check` proves each of the 14 knobs actually moves the simulation: a
+control wired to nothing is worse than no control at all.
+
 ## Layout
 
 ```
@@ -113,6 +146,7 @@ src/
   sounds.ts      the editable synth-document soundtrack
   sprites.ts     the editable sprite overrides
   levels.ts      the level document format + shelf
+  tuning.ts      the 14 tunables, their ranges, and the sanitizer
   replay.ts      record/replay documents
   editor.ts      the field designer
   ui/studioHost.tsx  the React island hosting the studio editors
