@@ -43,7 +43,9 @@ import { createCoop } from "@ccllc/coop";
 import "@ccllc/studio/styles.css";
 
 import { CELL, HEIGHT, WIDTH } from "./config";
+import type { MushroomField } from "./mushrooms";
 import { confineToBox } from "./entities";
+import { blockedAt, slideThroughField } from "./collide";
 import { createLevelEditor } from "./editor";
 import { createLevelStore, type LevelDoc } from "./levels";
 import { Renderer, SPRITE_SLOTS, type OverlayText } from "./render";
@@ -338,17 +340,44 @@ let mouseFire = false;
 let cursorHidden = false;
 let pointerLocked = false;
 
-/** Feed the virtual pointer a relative movement, in world pixels. */
-function nudgePointer(dx: number, dy: number): void {
-  [mouse.x, mouse.y] = confineToBox(mouse.x + dx, mouse.y + dy);
+/** Are mushrooms currently walls for the player driving this machine? */
+function shroomsAreWalls(): { field: MushroomField } | null {
+  const g = currentGame();
+  if (g.state !== STATE_PLAYING) return null;
+  if (g.tuning.shroomsBlockPlayer <= 0) return null;
+  const seat = mode === "coop" && coop.running ? coop.seat : 0;
+  const me = g.slots[Math.min(seat, g.slots.length - 1)];
+  if (me && me.powers.pierce > 0) return null; // ghost: walk through them
+  return { field: g.field };
+}
+
+/** Move the virtual pointer, stopped by exactly what stops the blaster: the
+ * box, and the mushrooms. Anything the pointer is allowed to do that the
+ * blaster is not becomes travel banked up somewhere invisible — push the
+ * mouse past a mushroom and the blaster would sit against it until the
+ * pointer surfaced on the far side, then warp across to meet it. */
+function movePointerTo(x: number, y: number): void {
+  const [wantX, wantY] = confineToBox(x, y);
+  const walls = shroomsAreWalls();
+  if (walls) {
+    [mouse.x, mouse.y] = slideThroughField(walls.field, mouse.x, mouse.y, wantX, wantY);
+  } else {
+    mouse.x = wantX;
+    mouse.y = wantY;
+  }
   mouse.active = true;
 }
 
+/** Feed the virtual pointer a relative movement, in world pixels. */
+function nudgePointer(dx: number, dy: number): void {
+  movePointerTo(mouse.x + dx, mouse.y + dy);
+}
+
 /** Put the virtual pointer at an absolute spot (unlocked mouse, where the
- * visible cursor is the truth), still clamped to the box. */
+ * visible cursor is the truth). Still walled: the cursor is hidden during
+ * play, so there is nothing on screen for it to disagree with. */
 function placePointer(x: number, y: number): void {
-  [mouse.x, mouse.y] = confineToBox(x, y);
-  mouse.active = true;
+  movePointerTo(x, y);
 }
 
 function wantsPointerLock(): boolean {
@@ -1431,6 +1460,15 @@ const lifecycle = createLifecycle({
   get wantsPointerLock() {
     return wantsPointerLock();
   },
+  get pointer() {
+    return { ...mouse };
+  },
+  get wallsActive() {
+    return shroomsAreWalls() !== null;
+  },
+  blockedAt: (x: number, y: number) => blockedAt(currentGame().field, x, y),
+  slide: (fx: number, fy: number, tx: number, ty: number) =>
+    slideThroughField(currentGame().field, fx, fy, tx, ty),
 };
 
 // --- Share links: a #level=… in the URL opens the designer on that field. --

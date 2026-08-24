@@ -64,14 +64,12 @@ import {
   type Powers,
 } from "./powerups";
 import { Rng } from "./rng";
+import { slideThroughField } from "./collide";
 import { DEFAULT_TUNING, normalizeTuning, tuningHash, type Tuning } from "./tuning";
 
 /** Ticks per second. A tick is the unit of time; the constant lives here, not
  * in the host. */
 export const TPS = 60;
-/** Kept off the wall by a hair, so the blaster is never counted as inside the
- * mushroom it is resting against. */
-const COLLIDE_EPSILON = 0.01;
 export const DT = 1 / TPS;
 
 // --- Input bit flags. -----------------------------------------------------
@@ -484,75 +482,11 @@ export class Game {
   }
 
   /** Move the blaster from where it was to where it wants to be, stopped by
-   * any mushroom in the way.
-   *
-   * Axis-separated so running along a wall slides instead of sticking, and
-   * sub-stepped so a fast trackball flick cannot jump straight through a
-   * mushroom. Each axis snaps to the FACE of whatever it ran into rather than
-   * refusing the move outright — stopping a whole frame of travel short of
-   * the wall reads as sticky, and at a slow enough speed would mean never
-   * touching it at all.
-   *
-   * If the blaster was ALREADY inside a mushroom — a flea can plant one on
-   * top of it, and a shot segment becomes one where it died — collision is
-   * skipped for that move, so it can always walk out rather than be sealed
-   * in place. */
+   * any mushroom in the way. The host runs the very same resolution over the
+   * virtual pointer that drives this blaster, so the two cannot come apart. */
   private slideAgainstShrooms(player: Player, fromX: number, fromY: number): void {
-    const toX = player.x;
-    const toY = player.y;
-    if (toX === fromX && toY === fromY) return;
-    if (this.shroomAt(fromX, fromY)) return; // stuck already: let it escape
-
-    const span = Math.max(Math.abs(toX - fromX), Math.abs(toY - fromY));
-    const steps = Math.min(Math.max(Math.ceil(span / (CELL * 0.4)), 1), 32);
-    let x = fromX;
-    let y = fromY;
-
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      x = this.resolveX(x, y, fromX + (toX - fromX) * t);
-      y = this.resolveY(x, y, fromY + (toY - fromY) * t);
-    }
+    const [x, y] = slideThroughField(this.field, fromX, fromY, player.x, player.y);
     player.place(x, y);
-  }
-
-  /** Furthest the blaster can get toward `wantX` on this row without entering
-   * a mushroom, snapped to the blocking cell's face. */
-  private resolveX(x: number, y: number, wantX: number): number {
-    if (wantX === x || !this.shroomAt(wantX, y)) return this.shroomAt(wantX, y) ? x : wantX;
-    const half = PLAYER_SIZE * 0.34;
-    const snapped =
-      wantX > x
-        ? Math.max(x, Math.floor((wantX + half) / CELL) * CELL - half - COLLIDE_EPSILON)
-        : Math.min(x, (Math.floor((wantX - half) / CELL) + 1) * CELL + half + COLLIDE_EPSILON);
-    return this.shroomAt(snapped, y) ? x : snapped;
-  }
-
-  private resolveY(x: number, y: number, wantY: number): number {
-    if (wantY === y || !this.shroomAt(x, wantY)) return this.shroomAt(x, wantY) ? y : wantY;
-    const half = PLAYER_SIZE * 0.34;
-    const snapped =
-      wantY > y
-        ? Math.max(y, Math.floor((wantY + half) / CELL) * CELL - half - COLLIDE_EPSILON)
-        : Math.min(y, (Math.floor((wantY - half) / CELL) + 1) * CELL + half + COLLIDE_EPSILON);
-    return this.shroomAt(x, snapped) ? y : snapped;
-  }
-
-  /** Does the blaster's body overlap a mushroom at this position? The box is
-   * a little smaller than the sprite, so squeezing through a one-cell gap
-   * feels possible rather than pixel-perfect. */
-  private shroomAt(x: number, y: number): boolean {
-    const half = PLAYER_SIZE * 0.34;
-    const c0 = Math.floor((x - half) / CELL);
-    const c1 = Math.floor((x + half) / CELL);
-    const r0 = Math.floor((y - half) / CELL);
-    const r1 = Math.floor((y + half) / CELL);
-    for (let row = r0; row <= r1; row++) {
-      for (let col = c0; col <= c1; col++) {
-        if (this.field.blocks(col, row)) return true;
-      }
-    }
-    return false;
   }
 
   private fire(slot: PlayerSlot, dt: number): void {

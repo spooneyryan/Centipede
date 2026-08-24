@@ -363,10 +363,11 @@ function freshGame(seed, players, tuning) {
 // a restore that forgets it, and that bug desyncs live co-op at every level.
 {
   const seen = new Set();
-  // On seed 777 with these input streams: LEVEL_CLEAR runs 1391..1487 and
-  // DYING runs 2695..2791, so 1400 and 2700 snapshot inside an interlude and
-  // 400 covers ordinary play. The assertion below fails if that ever drifts.
-  for (const from of [400, 1400, 2700, 3700]) {
+  // On seed 777 with these input streams: DYING runs 885..981 and 2141..2237,
+  // and LEVEL_CLEAR runs 3240..3336. So 900 and 2200 snapshot inside a death,
+  // 3280 inside a level clear, and 400 covers ordinary play. The assertion
+  // below fails if tuning ever shifts those spans out from under it.
+  for (const from of [400, 900, 2200, 3280]) {
     const a = freshGame(777, 2);
     for (let t = 0; t < from; t++) a.step([hostIn(t), joinIn(t)]);
     seen.add(a.state);

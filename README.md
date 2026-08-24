@@ -134,6 +134,29 @@ All of it is tunable, and any of it can be switched off — setting a spawn
 interval or the coin chance to 0 turns that thing off entirely, so you can dial
 back to plain 1981 Centipede if you want it.
 
+## The mouse
+
+Clicking the playfield **captures the mouse**: the cursor disappears and the
+physical mouse becomes the cabinet's trackball, read as relative motion.
+Escape gives it back, and Escape means that before it means anything else — a
+captured mouse can never cost you a co-op match.
+
+The pointer the game steers by is *virtual*, and it is clamped by exactly what
+clamps the blaster: the box at the bottom of the screen, and the mushrooms.
+That clamp is the whole trick. Shove the mouse a foot past the edge of the box
+and the pointer is still sitting on the edge, so the first millimetre back the
+other way moves the blaster. Track the raw position instead and you would have
+to wind that foot back before anything happened — and against a mushroom you
+would eventually surface on the far side and warp through it.
+
+Both use one shared sweep (`src/collide.ts`), so the pointer and the blaster
+cannot disagree about where a wall is.
+
+**Pointer lock needs a real browser.** Embedded webviews often block it by
+Permissions Policy (Claude Code's preview pane does), and the game falls back
+to plain absolute cursor tracking there — which brings the dead zone back,
+because an absolute cursor really is outside the box.
+
 ## Tuning the game
 
 Everything that changes how the game *feels* lives in [src/tuning.ts](src/tuning.ts)
