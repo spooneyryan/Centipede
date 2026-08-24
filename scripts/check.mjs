@@ -152,6 +152,7 @@ function freshGame(seed, players, tuning) {
     fireCooldown: 0.3, maxBullets: 1, bulletSpeed: 900, playerSpeed: 260,
     centipedeSpeed: 4, centipedeLevelGain: 3, centipedeMaxSpeed: 6, loneHeadBoost: 2.5,
     centipedeLength: 6, shroomHp: 1, shroomStartCount: 20, shroomMinCount: 10,
+    shroomsBlockPlayer: 0,
     lives: 5, extraLifeEvery: 2000,
     // Bugs: rates and speeds, plus turning the level-gated ones off at L5.
     spiderEvery: 1, spiderSpeed: 800, fleaEvery: 1, fleaThreshold: 120,
@@ -216,7 +217,36 @@ function freshGame(seed, players, tuning) {
     })(),
   );
   check(
-    "the padlock carries power-ups through a death",
+    "losing a life costs every power-up",
+    (() => {
+      const p = { rapid: 5, curve: 4, shield: 3, pierce: 2, multiplier: 4, multiplierTime: 3, lock: false };
+      powersAfterDeath(p);
+      const cleared =
+        p.rapid === 0 && p.curve === 0 && p.shield === 0 && p.pierce === 0 &&
+        p.multiplier === 1 && p.multiplierTime === 0;
+
+      // ...and end to end, through an actual death in a running game.
+      const g = new Game(5150, { players: 1, tuning: { ...DEFAULT_TUNING, lives: 3 } });
+      g.start();
+      const powers = g.slots[0].powers;
+      powers.rapid = 20; powers.curve = 20; powers.pierce = 20; powers.multiplier = 4;
+      powers.multiplierTime = 20;
+      const seg = g.trains[0].segments[0];
+      seg.col = Math.floor(g.slots[0].player.x / 40);
+      seg.row = Math.floor(g.slots[0].player.y / 40);
+      seg.prevCol = seg.col; seg.prevRow = seg.row;
+      const livesBefore = g.lives;
+      for (let t = 0; t < 200; t++) g.step([0]);
+      const after = g.slots[0].powers;
+      return (
+        cleared &&
+        g.lives === livesBefore - 1 &&
+        after.rapid === 0 && after.curve === 0 && after.pierce === 0 && after.multiplier === 1
+      );
+    })(),
+  );
+  check(
+    "the padlock carries power-ups through one death, and only one",
     (() => {
       const p = { rapid: 5, curve: 0, shield: 0, pierce: 0, multiplier: 4, multiplierTime: 3, lock: true };
       powersAfterDeath(p);
@@ -225,6 +255,64 @@ function freshGame(seed, players, tuning) {
       return kept && p.rapid === 0 && p.multiplier === 1;
     })(),
   );
+
+  // --- Mushrooms are walls. -------------------------------------------------
+  const boxedIn = (tuning) => {
+    const g = new Game(2468, { players: 1, tuning });
+    g.start();
+    g.field.clear();
+    const p = g.slots[0].player;
+    const col = Math.floor(p.x / 40);
+    const row = Math.floor(p.y / 40);
+    // A mushroom directly to the right of the blaster.
+    g.field.plant(col + 1, row);
+    const startX = p.x;
+    // Hold right for a second.
+    for (let t = 0; t < 60; t++) g.step([INPUT_RIGHT]);
+    return { moved: p.x - startX, x: p.x, wall: (col + 1) * 40 };
+  };
+
+  const blocked = boxedIn(DEFAULT_TUNING);
+  check("a mushroom stops the blaster", blocked.moved < 40, `moved ${Math.round(blocked.moved)}px`);
+  check("the blaster still reaches the mushroom", blocked.moved > 0, `moved ${Math.round(blocked.moved)}px`);
+
+  const free = boxedIn({ ...DEFAULT_TUNING, shroomsBlockPlayer: 0 });
+  check("turning the wall off lets it walk through", free.moved > blocked.moved + 40,
+    `blocked ${Math.round(blocked.moved)} vs free ${Math.round(free.moved)}`);
+
+  check(
+    "the ghost power walks through mushrooms",
+    (() => {
+      const g = new Game(2468, { players: 1 });
+      g.start();
+      g.field.clear();
+      const p = g.slots[0].player;
+      const col = Math.floor(p.x / 40);
+      const row = Math.floor(p.y / 40);
+      for (let c = col + 1; c < col + 6; c++) g.field.plant(c, row);
+      g.slots[0].powers.pierce = 30;
+      const startX = p.x;
+      for (let t = 0; t < 60; t++) g.step([INPUT_RIGHT]);
+      return p.x - startX > 120;
+    })(),
+  );
+
+  check(
+    "a blaster buried in a mushroom can still walk out",
+    (() => {
+      // A flea can plant one on top of you, and a shot segment becomes one
+      // where it died. Being sealed in place forever would be a soft lock.
+      const g = new Game(1357, { players: 1 });
+      g.start();
+      g.field.clear();
+      const p = g.slots[0].player;
+      g.field.plant(Math.floor(p.x / 40), Math.floor(p.y / 40));
+      const startX = p.x;
+      for (let t = 0; t < 60; t++) g.step([INPUT_LEFT]);
+      return Math.abs(p.x - startX) > 40;
+    })(),
+  );
+
   check(
     "a poisoned mushroom sends the centipede diving",
     (() => {

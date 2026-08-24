@@ -49,6 +49,8 @@ export interface Tuning {
   centipedeMaxSpeed: number;
   /** Shots needed to destroy a mushroom. */
   shroomHp: number;
+  /** 1 if mushrooms are solid to the blaster, 0 to walk through them. */
+  shroomsBlockPlayer: number;
   /** Mushrooms a fresh field starts with. */
   shroomStartCount: number;
   /** Mushrooms the field is topped back up to each level. */
@@ -126,6 +128,7 @@ export const DEFAULT_TUNING: Tuning = {
   loneHeadBoost: 1.45,
   centipedeMaxSpeed: 26,
   shroomHp: SHROOM_HP,
+  shroomsBlockPlayer: 1,
   shroomStartCount: SHROOM_START_COUNT,
   shroomMinCount: SHROOM_MIN_COUNT,
 
@@ -200,6 +203,7 @@ export const TUNING_FIELDS: readonly TuningField[] = [
   { key: "centipedeLength", label: "Centipede length", hint: "segments on level 1", min: 1, max: 24, step: 1, group: "Centipede" },
 
   { key: "shroomHp", label: "Mushroom toughness", hint: "shots to destroy one", min: 1, max: 4, step: 1, group: "Field" },
+  { key: "shroomsBlockPlayer", label: "Mushrooms block you", hint: "1 = solid, you must shoot your way out; 0 = walk through", min: 0, max: 1, step: 1, group: "Field" },
   { key: "shroomStartCount", label: "Starting mushrooms", hint: "how crowded a new field is", min: 0, max: 300, step: 1, group: "Field" },
   { key: "shroomMinCount", label: "Mushrooms per level", hint: "the field is topped back up to this", min: 0, max: 300, step: 1, group: "Field" },
 
@@ -215,7 +219,7 @@ export const TUNING_FIELDS: readonly TuningField[] = [
 
   { key: "coinChance", label: "Coin drop chance", hint: "in 100, per mushroom destroyed; 0 turns coins off", min: 0, max: 100, step: 1, unit: "%", group: "Coins" },
   { key: "coinLife", label: "Coin lifetime", hint: "seconds before it gives up and vanishes", min: 1, max: 30, step: 0.5, unit: "s", group: "Coins" },
-  { key: "powerSeconds", label: "Power-up duration", hint: "seconds of rapid fire, curve or pierce", min: 1, max: 60, step: 1, unit: "s", group: "Coins" },
+  { key: "powerSeconds", label: "Power-up duration", hint: "seconds of rapid fire, curve or ghost", min: 1, max: 60, step: 1, unit: "s", group: "Coins" },
   { key: "shieldSeconds", label: "Shield duration", hint: "seconds of invulnerability", min: 1, max: 60, step: 1, unit: "s", group: "Coins" },
   { key: "rapidFactor", label: "Rapid fire boost", hint: "how much faster rapid fire shoots", min: 1, max: 10, step: 0.25, unit: "x", group: "Coins" },
   { key: "curveSteer", label: "Curve gun steering", hint: "how hard you can bend a shot in flight", min: 0, max: 2000, step: 20, unit: "px/s", group: "Coins" },

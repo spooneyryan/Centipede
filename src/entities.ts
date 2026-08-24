@@ -5,6 +5,21 @@
 
 import { BOTTOM_ROW, CELL, COLS, HEIGHT, PLAYER_SIZE, PLAYER_SPEED, PLAYER_TOP_ROW, WIDTH, cellCenter } from "./config";
 
+/** Clamp a point into the box the blaster is allowed to occupy.
+ *
+ * Exported because the HOST needs it too: the pointer that drives the blaster
+ * is clamped to this same box every frame, so pushing the mouse past the edge
+ * cannot bank up travel that has to be un-wound before the blaster moves
+ * again. Push into the wall for a second and you are still on the wall, not a
+ * second's worth of movement away from it. */
+export function confineToBox(x: number, y: number): [number, number] {
+  const half = PLAYER_SIZE * 0.5;
+  return [
+    Math.min(Math.max(x, half), WIDTH - half),
+    Math.min(Math.max(y, PLAYER_TOP_ROW * CELL + half), HEIGHT - half),
+  ];
+}
+
 export class Player {
   x: number;
   y: number;
@@ -39,9 +54,7 @@ export class Player {
 
   /** Keep the blaster inside the box at the bottom of the screen. */
   private confine(): void {
-    const half = PLAYER_SIZE * 0.5;
-    this.x = Math.min(Math.max(this.x, half), WIDTH - half);
-    this.y = Math.min(Math.max(this.y, PLAYER_TOP_ROW * CELL + half), HEIGHT - half);
+    [this.x, this.y] = confineToBox(this.x, this.y);
   }
 
   /** Where a newly fired bullet appears. */

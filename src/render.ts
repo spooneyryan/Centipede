@@ -603,7 +603,7 @@ export class Renderer {
       const tags: string[] = [];
       if (p.rapid > 0) tags.push("RAPID");
       if (p.curve > 0) tags.push("CURVE");
-      if (p.pierce > 0) tags.push("PIERCE");
+      if (p.pierce > 0) tags.push("GHOST");
       if (p.multiplier > 1) tags.push(`${p.multiplier}x`);
       if (p.lock) tags.push("LOCK");
       if (tags.length === 0) continue;

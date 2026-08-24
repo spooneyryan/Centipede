@@ -26,7 +26,7 @@ export const COIN_LABELS: Record<number, string> = {
   [COIN_RAPID]: "RAPID",
   [COIN_CURVE]: "CURVE",
   [COIN_SHIELD]: "SHIELD",
-  [COIN_PIERCE]: "PIERCE",
+  [COIN_PIERCE]: "GHOST",
   [COIN_LIFE]: "1UP",
   [COIN_MULTIPLIER]: "2x",
   [COIN_LOCK]: "LOCK",
@@ -48,10 +48,11 @@ export interface Powers {
   rapid: number;
   curve: number;
   shield: number;
+  /** Mushrooms stop neither you nor your shots. */
   pierce: number;
   multiplier: number;
   multiplierTime: number;
-  /** Keeps the rest of this through one death, then is spent. */
+  /** Carries the rest through one death, and is spent doing it. */
   lock: boolean;
 }
 
@@ -79,8 +80,9 @@ export function agePowers(p: Powers, dt: number): void {
   if (p.multiplierTime === 0) p.multiplier = 1;
 }
 
-/** What a death costs. With the padlock you keep everything and spend the
- * lock instead — which is exactly why the lock coin is worth chasing. */
+/** What a death costs: everything you were carrying. The padlock is the one
+ * exception, and it is spent buying that reprieve — which is exactly why it
+ * is worth chasing. */
 export function powersAfterDeath(p: Powers): void {
   if (p.lock) {
     p.lock = false;

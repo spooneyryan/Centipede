@@ -114,10 +114,18 @@ to punish a different habit:
 **Coins** are Apeiron's best idea, and they are here: they fall out of destroyed
 mushrooms and dead bugs, bounce around, and **expire with a raspberry if you
 leave them** — which is what keeps prising you out of the safe corner. Rapid
-fire, curve gun (steer a shot in flight with left/right), shield, pierce,
-extra life, score multiplier, and a padlock that carries your power-ups
-through one death. **In co-op whoever touches the coin gets it** — they are
+fire, curve gun (steer a shot in flight with left/right), shield, **ghost**
+(you and your shots both pass through mushrooms), extra life, score
+multiplier, and a padlock that carries your power-ups through one death. **In co-op whoever touches the coin gets it** — they are
 per-player, so they are worth racing for.
+
+**Mushrooms are solid.** They block the blaster as well as the centipede, so
+the field you carve is also the maze you have to live in — you shoot your way
+out of a corner rather than strolling through it. The blaster slides along a
+wall rather than sticking to it, and if something plants a mushroom on top of
+you (a flea can, and a shot segment becomes one where it died) you can always
+walk out rather than being sealed in. The ghost coin suspends the rule, and
+`Mushrooms block you` in Settings turns it off entirely.
 
 From level 4, the field grows **odd mushrooms**: ones that come loose and fall
 on you, ones that reflect your shots, and flashing ones that pay a multiplier.

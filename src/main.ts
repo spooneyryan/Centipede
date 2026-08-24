@@ -42,7 +42,8 @@ import { createTelemetry } from "@ccllc/arcade/telemetry";
 import { createCoop } from "@ccllc/coop";
 import "@ccllc/studio/styles.css";
 
-import { HEIGHT, WIDTH } from "./config";
+import { CELL, HEIGHT, WIDTH } from "./config";
+import { confineToBox } from "./entities";
 import { createLevelEditor } from "./editor";
 import { createLevelStore, type LevelDoc } from "./levels";
 import { Renderer, SPRITE_SLOTS, type OverlayText } from "./render";
@@ -85,7 +86,7 @@ const GAME_VERSION = "1.0.0";
 // must carry everything that defines behaviour. Bump it whenever the
 // simulation changes, or a cached page will pair with a new build and the two
 // will quietly play different games.
-const COOP_TOKEN = "rustipede-v3"; // v3: the other bugs, coins and power-ups
+const COOP_TOKEN = "rustipede-v5"; // v5: mushrooms are solid to the blaster
 
 const el = <T extends HTMLElement>(id: string): T => {
   const found = document.getElementById(id);
@@ -321,9 +322,57 @@ const input = createInput({
 // The cabinet used a trackball, so pointing is the natural control. The
 // keyboard keeps working — moving the mouse takes over, pressing a direction
 // key hands control back.
-const mouse = { x: 0, y: 0, active: false };
+//
+// Clicking the playfield captures the mouse (pointer lock): the cursor
+// disappears and the physical mouse becomes the trackball, reading relative
+// motion instead of a screen position. Escape gives it back.
+//
+// `mouse` is a VIRTUAL pointer, and it is clamped to the blaster's own box on
+// every update. That clamp is the whole trick: shove the mouse a foot past the
+// edge of the box and the virtual pointer is still sitting on the edge, so the
+// first millimetre back the other way moves the blaster. Track the raw
+// position instead and you would have to wind that foot back before anything
+// happened.
+const mouse = { x: WIDTH * 0.5, y: HEIGHT - CELL, active: false };
 let mouseFire = false;
 let cursorHidden = false;
+let pointerLocked = false;
+
+/** Feed the virtual pointer a relative movement, in world pixels. */
+function nudgePointer(dx: number, dy: number): void {
+  [mouse.x, mouse.y] = confineToBox(mouse.x + dx, mouse.y + dy);
+  mouse.active = true;
+}
+
+/** Put the virtual pointer at an absolute spot (unlocked mouse, where the
+ * visible cursor is the truth), still clamped to the box. */
+function placePointer(x: number, y: number): void {
+  [mouse.x, mouse.y] = confineToBox(x, y);
+  mouse.active = true;
+}
+
+function wantsPointerLock(): boolean {
+  return (
+    settings.get("mouseControl") &&
+    !editor.isOpen &&
+    !uiHasFocus() &&
+    mode !== "replay" &&
+    typeof canvas.requestPointerLock === "function"
+  );
+}
+
+document.addEventListener("pointerlockchange", () => {
+  pointerLocked = document.pointerLockElement === canvas;
+  if (pointerLocked) {
+    // Start the trackball wherever the blaster already is, so capturing the
+    // mouse never teleports the ship.
+    const g = currentGame();
+    const me = g.slots[Math.min(coop.running ? coop.seat : 0, g.slots.length - 1)];
+    if (me) [mouse.x, mouse.y] = confineToBox(me.player.x, me.player.y);
+    mouse.active = true;
+  }
+  updateLegend();
+});
 
 // --- Documents: levels, replays. -------------------------------------------
 const levelStore = createLevelStore({ report });
@@ -1057,6 +1106,7 @@ const editor = createLevelEditor({
 
 el<HTMLButtonElement>("btnEditor").addEventListener("click", () => {
   if (mode === "coop" && coop.running) return; // not while a match runs
+  if (pointerLocked) document.exitPointerLock();
   exitReplay();
   editor.open();
   updateLegend();
@@ -1064,25 +1114,41 @@ el<HTMLButtonElement>("btnEditor").addEventListener("click", () => {
 
 // --- Pointer wiring. -------------------------------------------------------
 canvas.addEventListener("mousemove", (e) => {
-  const p = display.toWorld(e.clientX, e.clientY);
   if (editor.isOpen) {
+    const p = display.toWorld(e.clientX, e.clientY);
     editor.pointer(p.x, p.y, e.buttons);
     return;
   }
-  mouse.x = p.x;
-  mouse.y = p.y;
-  mouse.active = true;
+  if (pointerLocked) {
+    // Captured: relative motion only. The canvas is a 1920x1080 world scaled
+    // to fit, so CSS pixels of movement have to be divided by that scale to
+    // become world pixels — otherwise sensitivity would change with the
+    // window size.
+    const scale = display.viewport.scale || 1;
+    nudgePointer(e.movementX / scale, e.movementY / scale);
+    return;
+  }
+  const p = display.toWorld(e.clientX, e.clientY);
+  placePointer(p.x, p.y);
 });
 canvas.addEventListener("mousedown", (e) => {
-  const p = display.toWorld(e.clientX, e.clientY);
   if (editor.isOpen) {
+    const p = display.toWorld(e.clientX, e.clientY);
     editor.pointer(p.x, p.y, e.buttons);
     e.preventDefault();
     return;
   }
-  mouse.x = p.x;
-  mouse.y = p.y;
-  mouse.active = true;
+  if (!pointerLocked) {
+    const p = display.toWorld(e.clientX, e.clientY);
+    placePointer(p.x, p.y);
+    // Take the mouse. It stays taken until Escape.
+    if (wantsPointerLock()) {
+      const req = canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+      // Chrome returns a promise and rejects if the document lost focus;
+      // swallowing it keeps a failed grab from spilling into the console.
+      if (req && typeof req.catch === "function") req.catch(() => {});
+    }
+  }
   mouseFire = true;
   soundBank.player.resume();
   maybeStart(); // a click also drops the coin on the title screen
@@ -1107,6 +1173,12 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (e.code === "Escape") {
+    // Escape means "give me my cursor back" before it means anything else, so
+    // a captured mouse can never cost you a co-op match.
+    if (pointerLocked || document.pointerLockElement === canvas) {
+      document.exitPointerLock();
+      return;
+    }
     if (mode === "replay") {
       exitReplay();
     } else if (coop.running) {
@@ -1154,11 +1226,15 @@ function updateLegend(): void {
     legend.innerHTML = "<b>REPLAY</b> &nbsp;·&nbsp; watching a recorded run &nbsp;·&nbsp; <b>ESC</b> to exit";
   } else if (mode === "coop") {
     const seat = coop.running ? `you are <b>PLAYER ${coop.seat + 1}</b> (marked ⌄)` : "waiting";
+    const release = pointerLocked ? " &nbsp;·&nbsp; <b>ESC</b> release the mouse" : "";
     legend.innerHTML =
-      `<b>CO-OP</b> &nbsp;·&nbsp; ${seat} &nbsp;·&nbsp; <b>MOUSE</b>/<b>WASD</b> move &nbsp;·&nbsp; <b>SPACE</b> fire &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>R</b> rematch &nbsp;·&nbsp; <b>ESC</b> leave`;
+      `<b>CO-OP</b> &nbsp;·&nbsp; ${seat} &nbsp;·&nbsp; <b>MOUSE</b>/<b>WASD</b> move &nbsp;·&nbsp; <b>SPACE</b> fire &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>R</b> rematch${release}`;
+  } else if (pointerLocked) {
+    legend.innerHTML =
+      "<b>MOUSE CAPTURED</b> &nbsp;·&nbsp; move to fly the blaster &nbsp;·&nbsp; <b>CLICK</b> fire &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>R</b> restart &nbsp;·&nbsp; <b>ESC</b> release the mouse";
   } else {
     legend.innerHTML =
-      "<b>MOUSE</b> or <b>&larr; &uarr; &rarr; &darr;</b> / <b>WASD</b> move &nbsp;·&nbsp; <b>CLICK</b> or <b>SPACE</b> fire &nbsp;·&nbsp; <b>CLICK</b> / <b>ENTER</b> start &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>R</b> restart";
+      "<b>CLICK</b> to capture the mouse &nbsp;·&nbsp; <b>&larr; &uarr; &rarr; &darr;</b> / <b>WASD</b> move &nbsp;·&nbsp; <b>SPACE</b> fire &nbsp;·&nbsp; <b>ENTER</b> start &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>ESC</b> release";
   }
 }
 
@@ -1275,9 +1351,15 @@ const loop = createLoop({
     }
 
     // While the mouse is flying the blaster, the blaster is the cursor.
+    // Under pointer lock the browser hides it for us.
     const g = currentGame();
     const hide =
-      mouse.active && !isPaused() && g.state === STATE_PLAYING && !editor.isOpen && mode !== "replay";
+      !pointerLocked &&
+      mouse.active &&
+      !isPaused() &&
+      g.state === STATE_PLAYING &&
+      !editor.isOpen &&
+      mode !== "replay";
     if (hide !== cursorHidden) {
       cursorHidden = hide;
       canvas.style.cursor = hide ? "none" : "";
@@ -1336,6 +1418,19 @@ const lifecycle = createLifecycle({
   lifecycle,
   perf,
   startSolo: () => startSoloRun(pendingLayout),
+  // Diagnostics for the input gates, which are easy to get stuck.
+  get uiHasFocus() {
+    return uiHasFocus();
+  },
+  get studioBusy() {
+    return studio.busy;
+  },
+  get pointerLocked() {
+    return pointerLocked;
+  },
+  get wantsPointerLock() {
+    return wantsPointerLock();
+  },
 };
 
 // --- Share links: a #level=… in the URL opens the designer on that field. --
