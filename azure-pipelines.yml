@@ -1,0 +1,142 @@
+# Build Rustipede and deploy it to Azure App Service.
+#
+# The client and the server ship as one artifact: the relay serves the static
+# files as well as the WebSocket, so they have to be the same deployment or
+# the game and its co-op would drift apart in version.
+#
+# The infrastructure is NOT created here. infra/provision.ps1 owns that, and
+# owns it idempotently, so the pipeline can assume the app exists and stay
+# about building and shipping. Provisioning from a pipeline means every push
+# reasserts your infrastructure, which is how a hand-fixed setting silently
+# reverts mid-week.
+
+trigger:
+  branches:
+    include: [main]
+
+pr:
+  branches:
+    include: [main]
+
+variables:
+  buildConfiguration: Release
+  # Set these two in the pipeline's own variables, or edit them here.
+  azureSubscription: rustipede-arm        # the ARM service connection name
+  webAppName: rustipede
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+  - stage: Build
+    jobs:
+      - job: Build
+        steps:
+          - task: NodeTool@0
+            displayName: Node 22
+            inputs:
+              versionSpec: "22.x"
+
+          - task: UseDotNet@2
+            displayName: .NET 10 SDK
+            inputs:
+              version: "10.0.x"
+              includePreviewVersions: true
+
+          # GameBase is referenced BY PATH (see vite.config.ts), so it has to
+          # be on disk beside this repo for the build to resolve @ccllc/*.
+          # Until it is published to the feed, the pipeline needs it checked
+          # out as a second repository -- see DEPLOY.md.
+          - checkout: self
+            fetchDepth: 1
+
+          - script: npm ci
+            displayName: npm ci
+
+          - script: npm run typecheck
+            displayName: Typecheck
+
+          # The determinism proof. It runs two full co-op clients over a
+          # simulated laggy link in Node, so a change that would desync two
+          # players fails the build rather than the match.
+          - script: npm run check
+            displayName: Determinism and netcode checks
+
+          - script: npm run build
+            displayName: Build the client
+
+          - script: dotnet publish server -c $(buildConfiguration) -o $(Build.ArtifactStagingDirectory)/site
+            displayName: Publish the server
+
+          # The client goes INSIDE the publish root. App Service deploys that
+          # folder and nothing above it, so the local layout's ../dist does
+          # not exist there; Program.cs probes wwwroot first for this reason.
+          - script: cp -r dist $(Build.ArtifactStagingDirectory)/site/wwwroot
+            displayName: Fold the client into wwwroot
+
+          - task: ArchiveFiles@2
+            displayName: Package
+            inputs:
+              rootFolderOrFile: $(Build.ArtifactStagingDirectory)/site
+              includeRootFolder: false
+              archiveType: zip
+              archiveFile: $(Build.ArtifactStagingDirectory)/rustipede.zip
+              replaceExistingArchive: true
+
+          - publish: $(Build.ArtifactStagingDirectory)/rustipede.zip
+            artifact: rustipede
+
+  - stage: Deploy
+    # Pull requests build and get checked, but only main ships.
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: Deploy
+        environment: rustipede-production
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: rustipede
+
+                - task: AzureWebApp@1
+                  displayName: Deploy to App Service
+                  inputs:
+                    azureSubscription: $(azureSubscription)
+                    appType: webAppLinux
+                    appName: $(webAppName)
+                    package: $(Pipeline.Workspace)/rustipede/rustipede.zip
+                    # Matches the runtime provision.ps1 sets.
+                    runtimeStack: "DOTNETCORE|10.0"
+
+                # A deploy that returns 200 has proved the site is up. It has
+                # not proved the RELAY is up, and the relay is the half that
+                # silently breaks -- WebSockets are off by default on App
+                # Service, and when they are off nothing appears in the log
+                # because the request never reaches the app.
+                #
+                # A plain GET to the socket path must answer 400
+                # (not-a-websocket-request). 404 means the app is not routing
+                # it; anything else means the relay is not running.
+                - script: |
+                    set -e
+                    url="https://$(webAppName).azurewebsites.net"
+                    echo "Waiting for $url to come back up..."
+                    for i in $(seq 1 30); do
+                      code=$(curl -s -o /dev/null -w '%{http_code}' "$url/" || true)
+                      if [ "$code" = "200" ]; then break; fi
+                      sleep 5
+                    done
+                    test "$code" = "200" || { echo "Site did not return 200 (got $code)"; exit 1; }
+                    echo "Site is up."
+
+                    relay=$(curl -s -o /dev/null -w '%{http_code}' "$url/ws/mp" || true)
+                    echo "Relay probe returned $relay"
+                    if [ "$relay" != "400" ]; then
+                      echo "The relay is not answering. 400 is expected here:"
+                      echo "it means the endpoint exists and refused a non-WebSocket request."
+                      echo "Check that WebSockets are enabled: infra/provision.ps1 sets this."
+                      exit 1
+                    fi
+                    echo "Relay is up."
+                  displayName: Smoke test the site and the relay

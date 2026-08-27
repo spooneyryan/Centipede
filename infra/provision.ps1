@@ -1,0 +1,313 @@
+﻿<#
+.SYNOPSIS
+  Create (or update) the Azure App Service that hosts Rustipede, and
+  optionally publish the current working tree straight to it.
+
+.DESCRIPTION
+  Idempotent: every step checks before it creates, so re-running is safe and
+  is in fact the intended way to reapply settings after someone has poked at
+  them in the portal.
+
+  Why App Service and not Static Web Apps: co-op needs the relay, which is an
+  ASP.NET Core server holding a WebSocket per player. Static Web Apps back
+  onto HTTP-triggered Functions and cannot hold a socket open, so the game
+  would load and co-op would be dead. App Service serves the client and the
+  relay from one origin, which is what the client's `document.baseURI`-relative
+  /ws/mp expects.
+
+  Three settings here are load-bearing and none of them are the default:
+
+    WebSockets                off by default. Without it the lobby opens, the
+                              socket never connects, and NOTHING appears in
+                              the server log, because the request never
+                              reaches the app.
+    Exactly one worker        the relay keeps its lobby registry in memory. On
+                              two instances, two players can land on different
+                              ones and never pair, intermittently, for reasons
+                              invisible from either end.
+    Always On                 without it the app unloads when idle and the
+                              next visitor waits through a cold start, which
+                              drops any WebSocket mid-handshake.
+
+.EXAMPLE
+  ./infra/provision.ps1
+  ./infra/provision.ps1 -Deploy
+  ./infra/provision.ps1 -Name rustipede-ryan -Location westus2 -Deploy
+  ./infra/provision.ps1 -WhatIf          # show the plan, change nothing
+#>
+[CmdletBinding(SupportsShouldProcess = $true)]
+param(
+    # Globally unique: it becomes <name>.azurewebsites.net.
+    [string] $Name = "rustipede",
+    [string] $ResourceGroup = "rustipede-rg",
+    # westus2, not eastus: this subscription has an App Service quota of zero
+    # in eastus, and the failure cascades into confusing "resource not found"
+    # errors further down rather than saying so. Quota is per REGION, so the
+    # fix is usually a different one rather than a support ticket.
+    [string] $Location = "westus2",
+    # B1 is the cheapest tier with Always On. F1 has neither Always On nor
+    # enough concurrent sockets to be worth playing on.
+    [ValidateSet("F1", "B1", "B2", "S1", "P0v3")]
+    [string] $Sku = "B1",
+    [string] $Subscription,
+    # Build and publish the working tree once provisioning is done.
+    [switch] $Deploy
+)
+
+$ErrorActionPreference = "Stop"
+$repo = Split-Path -Parent $PSScriptRoot
+
+function Step($text) { Write-Host "`n=== $text" -ForegroundColor Cyan }
+function Note($text) { Write-Host "    $text" -ForegroundColor DarkGray }
+function Ok($text)   { Write-Host "    $text" -ForegroundColor Green }
+function Warn($text) { Write-Host "    $text" -ForegroundColor Yellow }
+
+# The az executable, resolved once and called by path from here on.
+#
+# PowerShell matches command names case-insensitively, so a helper function
+# named `Az` shadows the `az` CLI -- and then every helper that shells out to
+# `az` calls itself instead. Calling the resolved path makes that impossible
+# however these helpers are named later.
+$script:AzExe = (Get-Command az -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1).Source
+if (-not $script:AzExe) { throw "The Azure CLI is not installed. See https://aka.ms/azure-cli" }
+
+# Run an `az` command that MUST succeed.
+#
+# PowerShell does not raise on a native command's exit code, and
+# $ErrorActionPreference does not change that -- so without this check a
+# failed `az` prints its error and the script sails on announcing success.
+# That is worse than crashing: the first run of this script reported creating
+# a plan, a web app and six settings, none of which existed.
+function Invoke-Az {
+    param([Parameter(ValueFromRemainingArguments = $true)] [string[]] $Arguments)
+    & $script:AzExe @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "az $($Arguments -join ' ')`n  exited with code $LASTEXITCODE (see the error above)"
+    }
+}
+
+# Run an `az` query that is ALLOWED to come back empty, and hand back parsed
+# JSON or $null.
+#
+# Needed because of a Windows PowerShell trap: with $ErrorActionPreference =
+# "Stop", anything a native executable writes to stderr is wrapped in an
+# ErrorRecord and terminates the script. So `az webapp show` on a resource
+# group that does not exist yet -- an ordinary "not there", exactly what a
+# probe is for -- would kill the run instead of answering the question.
+function Get-AzJson {
+    param([Parameter(ValueFromRemainingArguments = $true)] [string[]] $Arguments)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $out = & $script:AzExe @Arguments 2>$null
+        if ($LASTEXITCODE -ne 0) { return $null }
+        if (-not $out) { return $null }
+        return ($out | Out-String | ConvertFrom-Json)
+    }
+    catch { return $null }
+    finally { $ErrorActionPreference = $previous }
+}
+
+# --- Preflight -------------------------------------------------------------
+Step "Checking the Azure CLI"
+if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+    throw "The Azure CLI is not installed. See https://aka.ms/azure-cli"
+}
+$account = Get-AzJson account show
+if (-not $account) { throw "Not signed in. Run: az login" }
+if ($Subscription) {
+    Invoke-Az account set --subscription $Subscription
+    $account = Get-AzJson account show
+}
+Ok "$($account.name)  ($($account.user.name))"
+
+$plan = "$Name-plan"
+
+# `az webapp list` only sees what this subscription owns, but the HOSTNAME is
+# global -- so a name someone else took fails at create time with a message
+# that does not obviously say so. Check up front instead.
+Step "Checking the name is available"
+# The body goes through a file rather than inline: PowerShell 5.1 mangles
+# embedded quotes on its way to a native executable, and az then reports the
+# fragments as unrecognized arguments.
+# Written through .NET rather than Set-Content because this has to happen even
+# under -WhatIf: it is a read-only probe, and skipping it would leave the check
+# reporting on a file that was never written.
+$bodyFile = Join-Path ([System.IO.Path]::GetTempPath()) "rustipede-namecheck.json"
+$body = @{ name = $Name; type = "Microsoft.Web/sites" } | ConvertTo-Json -Compress
+[System.IO.File]::WriteAllText($bodyFile, $body)
+# Content-Type is not inferred from --body, and without it the API rejects the
+# request as application/octet-stream.
+$taken = Get-AzJson rest --method post `
+    --url "https://management.azure.com/subscriptions/$($account.id)/providers/Microsoft.Web/checkNameAvailability?api-version=2023-12-01" `
+    --headers "Content-Type=application/json" `
+    --body "@$bodyFile"
+[System.IO.File]::Delete($bodyFile)
+
+$existing = Get-AzJson webapp show --name $Name --resource-group $ResourceGroup
+if ($existing) {
+    Ok "$Name already exists in $ResourceGroup -- updating it in place"
+}
+elseif ($taken -and -not $taken.nameAvailable) {
+    throw "The hostname '$Name.azurewebsites.net' is taken ($($taken.message)). Pass a different -Name."
+}
+else {
+    Ok "$Name.azurewebsites.net is free"
+}
+
+if ($WhatIfPreference) { Note "-WhatIf: nothing below will actually run." }
+
+# --- Resource group --------------------------------------------------------
+Step "Resource group: $ResourceGroup"
+if ((az group exists --name $ResourceGroup) -eq "true") {
+    Ok "already there"
+}
+elseif ($PSCmdlet.ShouldProcess($ResourceGroup, "create resource group in $Location")) {
+    Invoke-Az group create --name $ResourceGroup --location $Location --output none
+    Ok "created in $Location"
+}
+
+# --- App Service plan ------------------------------------------------------
+Step "App Service plan: $plan ($Sku, Linux)"
+$havePlan = Get-AzJson appservice plan show --name $plan --resource-group $ResourceGroup
+if ($havePlan) {
+    Ok "already there ($($havePlan.sku.name))"
+    if ($havePlan.sku.name -ne $Sku -and $PSCmdlet.ShouldProcess($plan, "change tier to $Sku")) {
+        Invoke-Az appservice plan update --name $plan --resource-group $ResourceGroup --sku $Sku --output none
+        Ok "tier changed to $Sku"
+    }
+}
+elseif ($PSCmdlet.ShouldProcess($plan, "create $Sku Linux plan")) {
+    try {
+        Invoke-Az appservice plan create --name $plan --resource-group $ResourceGroup `
+            --location $Location --sku $Sku --is-linux --output none
+        Ok "created"
+    }
+    catch {
+        # App Service quota is granted per region, and a subscription can sit
+        # at zero in one region while being fine in the next. The raw message
+        # says "additional quota" without saying that, which sends people to
+        # open a support ticket they usually do not need.
+        if ("$_" -match "quota") {
+            Warn "No App Service quota in $Location on this subscription."
+            Warn "Quota is per REGION. Try another one, e.g.:"
+            Warn "  ./infra/provision.ps1 -Location centralus -Deploy"
+            Warn "(westus2 and centralus were both usable when this was written.)"
+        }
+        throw
+    }
+}
+
+# --- Web app ---------------------------------------------------------------
+Step "Web app: $Name"
+if ($existing) {
+    Ok "already there"
+}
+elseif ($PSCmdlet.ShouldProcess($Name, "create web app on DOTNETCORE|10.0")) {
+    Invoke-Az webapp create --name $Name --resource-group $ResourceGroup --plan $plan `
+        --runtime "DOTNETCORE:10.0" --output none
+    Ok "created"
+}
+
+# --- The settings that actually matter -------------------------------------
+Step "Applying the settings the defaults get wrong"
+if ($PSCmdlet.ShouldProcess($Name, "enable WebSockets, pin to one worker, Always On, HTTPS only")) {
+
+    # WebSockets. Without this the co-op lobby fails with nothing in the log.
+    Invoke-Az webapp config set --name $Name --resource-group $ResourceGroup `
+        --web-sockets-enabled true --output none
+    Ok "WebSockets on"
+
+    # One worker. The relay's lobby registry is in-process, so a second
+    # instance is a second, invisible game world.
+    Invoke-Az webapp config set --name $Name --resource-group $ResourceGroup `
+        --number-of-workers 1 --output none
+    Ok "pinned to a single worker (the relay is stateful in memory)"
+
+    # Always On needs a tier that has it; F1 does not.
+    if ($Sku -eq "F1") {
+        Warn "F1 has no Always On: the app unloads when idle and the next"
+        Warn "visitor waits through a cold start, dropping live sockets."
+    }
+    else {
+        Invoke-Az webapp config set --name $Name --resource-group $ResourceGroup `
+            --always-on true --output none
+        Ok "Always On"
+    }
+
+    # wss:// rather than ws://, and no plaintext round trip first.
+    Invoke-Az webapp update --name $Name --resource-group $ResourceGroup `
+        --https-only true --output none
+    Ok "HTTPS only"
+
+    # ASPNETCORE_ENVIRONMENT so the app does not run in Development remotely.
+    Invoke-Az webapp config appsettings set --name $Name --resource-group $ResourceGroup `
+        --settings ASPNETCORE_ENVIRONMENT=Production --output none
+    Ok "ASPNETCORE_ENVIRONMENT=Production"
+
+    # Keep the deployment logs somewhere readable when something goes wrong.
+    Invoke-Az webapp log config --name $Name --resource-group $ResourceGroup `
+        --application-logging filesystem --level information --output none
+    Ok "application logging on (az webapp log tail)"
+}
+
+# --- Optional: build and publish the working tree ---------------------------
+if ($Deploy) {
+    Step "Building"
+    Push-Location $repo
+    try {
+        npm ci
+        if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+        npm run build
+        if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
+
+        $publish = Join-Path $repo "artifacts/publish"
+        if (Test-Path $publish) { Remove-Item $publish -Recurse -Force }
+
+        dotnet publish server -c Release -o $publish
+        if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+
+        # The client goes INSIDE the publish root: App Service deploys that
+        # folder and nothing above it, so ../dist does not exist there.
+        # Program.cs probes wwwroot first for exactly this reason.
+        Copy-Item (Join-Path $repo "dist") (Join-Path $publish "wwwroot") -Recurse -Force
+        Ok "client folded into wwwroot"
+
+        # Packaged with .NET rather than Compress-Archive.
+        #
+        # Compress-Archive omits explicit directory entries, and Kudu's
+        # extractor then silently drops nested folders: the DLLs arrived and
+        # wwwroot did not, so the relay answered and the game 404'd. Nothing
+        # in the deployment log mentions it -- the deploy reports success.
+        # ZipFile::CreateFromDirectory writes the directory entries.
+        $zip = Join-Path $repo "artifacts/rustipede.zip"
+        if (Test-Path $zip) { Remove-Item $zip -Force }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            $publish, $zip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+        Ok "packaged $([math]::Round((Get-Item $zip).Length / 1MB, 2)) MB"
+
+        Step "Deploying"
+        if ($PSCmdlet.ShouldProcess($Name, "zip deploy")) {
+            # Oryx would otherwise try to BUILD what we just published,
+            # and fail: it expects sources, not a publish output.
+            Invoke-Az webapp config appsettings set --name $Name --resource-group $ResourceGroup `
+                --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false --output none
+            Invoke-Az webapp deploy --name $Name --resource-group $ResourceGroup `
+                --src-path $zip --type zip --restart true --output none
+            Ok "deployed"
+        }
+    }
+    finally { Pop-Location }
+}
+
+# --- Done ------------------------------------------------------------------
+$url = "https://$Name.azurewebsites.net"
+Step "Done"
+Write-Host "    $url" -ForegroundColor Green
+Note ""
+Note "Open it in TWO windows to try co-op (two tabs pause each other)."
+Note "Logs:    az webapp log tail --name $Name --resource-group $ResourceGroup"
+Note "Redeploy: ./infra/provision.ps1 -Deploy"
+Note "Delete everything: az group delete --name $ResourceGroup --yes"

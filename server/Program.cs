@@ -32,11 +32,38 @@ app.Use(async (ctx, next) =>
     await next();
 });
 
-// Serve the Vite build output directly — no copy step.
-var webRoot = Path.Combine(app.Environment.ContentRootPath, "..", "dist");
-var files = new PhysicalFileProvider(Path.GetFullPath(webRoot));
-app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = files });
-app.UseStaticFiles(new StaticFileOptions { FileProvider = files });
+// Where the Vite build lands, which differs between running here and running
+// deployed. Locally the server sits beside the client and reads ../dist with
+// no copy step; a published build has the client folded into wwwroot next to
+// the DLL, because App Service only deploys what is under the publish root.
+//
+// PhysicalFileProvider THROWS on a missing directory, so probing beats
+// guessing: guessing wrong takes the whole site down at startup with a
+// DirectoryNotFoundException that says nothing about the real problem.
+var candidates = new[]
+{
+    Path.Combine(app.Environment.ContentRootPath, "wwwroot"),          // published
+    Path.Combine(app.Environment.ContentRootPath, "..", "dist"),       // local
+};
+var webRoot = candidates.Select(Path.GetFullPath).FirstOrDefault(Directory.Exists);
+
+if (webRoot is null)
+{
+    // Start anyway. The relay still answers, which keeps the failure
+    // diagnosable — a site that will not boot tells you far less than one
+    // that boots and says exactly which paths it looked in.
+    app.Logger.LogError(
+        "No client build found. Looked in: {Paths}. Run `npm run build` (local) "
+        + "or check that the pipeline copied dist into wwwroot (deployed).",
+        string.Join(", ", candidates.Select(Path.GetFullPath)));
+}
+else
+{
+    app.Logger.LogInformation("Serving the client from {WebRoot}", webRoot);
+    var files = new PhysicalFileProvider(webRoot);
+    app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = files });
+    app.UseStaticFiles(new StaticFileOptions { FileProvider = files });
+}
 
 // Only when --urls was not supplied: passing it to app.Run() unconditionally
 // would override --urls, silently ignoring the port a caller asked for —

@@ -10,3 +10,4 @@
 # The .NET host's build output.
 /server/bin/
 /server/obj/
+/artifacts/

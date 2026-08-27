@@ -76,6 +76,21 @@ fail it loudly (14, 10 and 9 assertions respectively). All three used to pass.
 npm run typecheck
 ```
 
+## Deploying
+
+```powershell
+./infra/provision.ps1 -Deploy
+```
+
+One idempotent command: resource group, App Service plan, web app, the
+settings the defaults get wrong, build, publish, ship. `-WhatIf` shows the
+plan and changes nothing. Live at <https://rustipede.azurewebsites.net>.
+
+It has to be App Service rather than Static Web Apps: co-op needs the relay to
+hold a WebSocket per player, and Static Web Apps back onto HTTP-triggered
+Functions that cannot. The full write-up, including the three non-default
+settings and the per-region quota trap, is in [infra/DEPLOY.md](infra/DEPLOY.md).
+
 ## Desktop
 
 ```powershell
