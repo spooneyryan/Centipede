@@ -274,19 +274,56 @@ if ($Deploy) {
         Copy-Item (Join-Path $repo "dist") (Join-Path $publish "wwwroot") -Recurse -Force
         Ok "client folded into wwwroot"
 
-        # Packaged with .NET rather than Compress-Archive.
+        # The zip is built entry by entry, with an explicit entry for every
+        # DIRECTORY, because Kudu's extractor needs them: given a zip that
+        # carries only file paths, it creates the top level and silently drops
+        # the nested folders. The DLLs arrive, wwwroot does not, and the
+        # deployment reports success -- so the relay answers and the game
+        # 404s, with nothing anywhere saying why.
         #
-        # Compress-Archive omits explicit directory entries, and Kudu's
-        # extractor then silently drops nested folders: the DLLs arrived and
-        # wwwroot did not, so the relay answered and the game 404'd. Nothing
-        # in the deployment log mentions it -- the deploy reports success.
-        # ZipFile::CreateFromDirectory writes the directory entries.
+        # Neither of the obvious tools writes those entries. Compress-Archive
+        # omits them, and so does ZipFile::CreateFromDirectory, which only
+        # emits an entry for a directory that is EMPTY. Both were tried
+        # against this deployment and both failed the same way.
         $zip = Join-Path $repo "artifacts/rustipede.zip"
         if (Test-Path $zip) { Remove-Item $zip -Force }
+        Add-Type -AssemblyName System.IO.Compression
         Add-Type -AssemblyName System.IO.Compression.FileSystem
-        [System.IO.Compression.ZipFile]::CreateFromDirectory(
-            $publish, $zip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
-        Ok "packaged $([math]::Round((Get-Item $zip).Length / 1MB, 2)) MB"
+
+        $root = (Resolve-Path $publish).Path.TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+        $stream = [System.IO.File]::Open($zip, [System.IO.FileMode]::Create)
+        $archive = New-Object System.IO.Compression.ZipArchive(
+            $stream, [System.IO.Compression.ZipArchiveMode]::Create)
+        try {
+            # Directories first, each with a trailing slash, as the format
+            # expects and as the extractor looks for.
+            Get-ChildItem -LiteralPath $publish -Recurse -Directory | ForEach-Object {
+                $rel = $_.FullName.Substring($root.Length + 1).Replace("\", "/") + "/"
+                [void] $archive.CreateEntry($rel)
+            }
+            Get-ChildItem -LiteralPath $publish -Recurse -File | ForEach-Object {
+                $rel = $_.FullName.Substring($root.Length + 1).Replace("\", "/")
+                [void] [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                    $archive, $_.FullName, $rel,
+                    [System.IO.Compression.CompressionLevel]::Optimal)
+            }
+        }
+        finally {
+            $archive.Dispose()
+            $stream.Dispose()
+        }
+
+        # Prove the structure before shipping it, rather than finding out from
+        # a 404 on a site that deployed "successfully".
+        $check = [System.IO.Compression.ZipFile]::OpenRead($zip)
+        try {
+            $dirs = @($check.Entries | Where-Object { $_.FullName.EndsWith("/") })
+            $client = @($check.Entries | Where-Object { $_.FullName -like "wwwroot/*" -and -not $_.FullName.EndsWith("/") })
+            if ($dirs.Count -eq 0) { throw "Packaging produced no directory entries; Kudu would drop wwwroot." }
+            if ($client.Count -eq 0) { throw "Packaging produced no client files under wwwroot/." }
+            Ok "packaged $([math]::Round((Get-Item $zip).Length / 1MB, 2)) MB ($($dirs.Count) dirs, $($client.Count) client files)"
+        }
+        finally { $check.Dispose() }
 
         Step "Deploying"
         if ($PSCmdlet.ShouldProcess($Name, "zip deploy")) {
