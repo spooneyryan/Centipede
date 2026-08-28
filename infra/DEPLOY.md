@@ -151,8 +151,28 @@ both sides at once, and wrong the moment the build leaves this machine.
 
 ## Undo
 
+**Which command depends on who owns the plan**, and getting it wrong goes
+badly in one direction or the other: deleting a plan that other apps live on,
+or believing the billing stopped when it did not. The script prints the right
+one for your setup at the end of every run.
+
+If the game created its own plan, the group holds both and removing it stops
+the charge:
+
 ```powershell
 az group delete --name rustipede-rg --yes
 ```
 
-Removes the app, the plan and the group. Billing stops with it.
+If the game is sharing a plan (`-PlanName`), delete only the app. The plan
+belongs to whatever else is running on it:
+
+```powershell
+az webapp delete --name rustipede --resource-group rustipede-rg
+```
+
+That leaves the plan and its other apps untouched — and note it does **not**
+reduce your bill, because the plan was already being paid for. That is the
+point of sharing one.
+
+An empty plan left behind by a move still bills at its full tier. `az
+appservice plan list --query "[?numberOfSites==\`0\`]"` finds them.

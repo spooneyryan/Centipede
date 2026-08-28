@@ -182,6 +182,8 @@ elseif ($PSCmdlet.ShouldProcess($ResourceGroup, "create resource group in $Locat
 Step "App Service plan: $plan"
 $havePlan = Get-AzJson appservice plan show --name $plan --resource-group $PlanResourceGroup
 $planId = $null
+$adoptedPlan = [bool] $havePlan
+$neighbourNames = @()
 
 if ($havePlan) {
     # Adopt it. Its region and tier are facts about a resource someone else
@@ -215,8 +217,9 @@ if ($havePlan) {
 
     # Sharing is fine, but it is worth knowing what it is being shared with.
     $neighbours = Get-AzJson webapp list --query "[?serverFarmId=='$planId'].name"
-    if ($neighbours -and @($neighbours).Count -gt 0) {
-        Note "sharing this plan with: $(@($neighbours) -join ', ')"
+    $neighbourNames = @($neighbours | Where-Object { $_ -ne $Name })
+    if ($neighbourNames.Count -gt 0) {
+        Note "sharing this plan with: $($neighbourNames -join ', ')"
         Note "$($havePlan.sku.name) is one small VM between all of them."
     }
 }
@@ -392,4 +395,14 @@ Note ""
 Note "Open it in TWO windows to try co-op (two tabs pause each other)."
 Note "Logs:    az webapp log tail --name $Name --resource-group $ResourceGroup"
 Note "Redeploy: ./infra/provision.ps1 -Deploy"
-Note "Delete everything: az group delete --name $ResourceGroup --yes"
+# Teardown differs entirely depending on who owns the plan, and getting it
+# wrong in either direction is bad: deleting a plan other apps live on, or
+# believing billing stopped when it did not.
+if ($adoptedPlan) {
+    Note "Remove the game:   az webapp delete --name $Name --resource-group $ResourceGroup"
+    Note "                   (leaves '$plan' and the $(@($neighbourNames).Count) other apps on it alone)"
+}
+else {
+    Note "Delete everything: az group delete --name $ResourceGroup --yes"
+    Note "                   (the app AND its plan, which is what stops the billing)"
+}
