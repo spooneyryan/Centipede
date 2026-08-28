@@ -71,6 +71,38 @@ through a cold start, which drops any WebSocket mid-handshake. F1 does not
 have it, which is why B1 is the floor for something you would actually invite
 someone to play on.
 
+## The wrong account is worse than no account
+
+`az` picks a default subscription, and it re-picks silently the moment a new
+tenant appears on the sign-in -- a service connection, an invitation, anything.
+It happened here: the default became a **tenant-level account**, a sign-in with
+no subscription behind it.
+
+What makes that dangerous is not the error it eventually throws. It is that
+every probe in this script reads as *not there* first: the resource group is
+missing, the web app is missing, the hostname is free. So the script does not
+stop, it starts **building**. Landing on a tenant with no subscription merely
+errors out; landing on the wrong *real* subscription would quietly stand up a
+second copy of the whole deployment next to the one you already have.
+
+The preflight now refuses a tenant-level account -- the one whose subscription
+id **is** its tenant id, which is the cheapest reliable tell -- and prints the
+subscriptions you could have meant, as commands you can paste:
+
+```
+Signed in to a TENANT-LEVEL account -- 'N/A(tenant level account)' -- which owns no subscription.
+Every check below would read as 'not there' and this script would start creating things.
+Name the subscription you mean:
+  ./infra/provision.ps1 -Subscription f2f0bf15-...   # Azure subscription 1
+```
+
+Every successful run also prints the subscription id it is acting on, under the
+account name, because the name alone does not distinguish two subscriptions
+called the same thing.
+
+If you have more than one tenant, pass `-Subscription` and stop thinking about
+it.
+
 ## Quota, and the error that does not say "region"
 
 App Service quota is granted **per region**, and a subscription can sit at

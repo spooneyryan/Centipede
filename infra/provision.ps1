@@ -139,7 +139,29 @@ if ($Subscription) {
     Invoke-Az account set --subscription $Subscription
     $account = Get-AzJson account show
 }
+
+# Refuse a TENANT-LEVEL account, which is a sign-in with no subscription behind
+# it. `az` picks one of these as the default the moment a new tenant appears --
+# a service connection, an invitation, anything -- and it does so silently.
+#
+# The failure it causes is the dangerous kind, because every probe below reads
+# as "not there": the resource group is missing, the app is missing, the
+# hostname is free. So the script does not stop, it starts BUILDING. Landing on
+# a tenant with no subscription just errors; landing on the wrong real
+# subscription would quietly stand up a second copy of the whole deployment.
+#
+# A tenant-level account is exactly the one whose subscription id IS its tenant
+# id, which is the cheapest reliable tell.
+if ($account.id -eq $account.tenantId) {
+    $real = Get-AzJson account list --all --query "[?id!=tenantId].{name:name,id:id}"
+    $lines = if ($real) { @($real) | ForEach-Object { "  ./infra/provision.ps1 -Subscription $($_.id)   # $($_.name)" } }
+             else { @("  (az account list --all shows no real subscription; check az login)") }
+    throw ("Signed in to a TENANT-LEVEL account -- '$($account.name)' -- which owns no subscription.`n" +
+           "Every check below would read as 'not there' and this script would start creating things.`n" +
+           "Name the subscription you mean:`n" + ($lines -join "`n"))
+}
 Ok "$($account.name)  ($($account.user.name))"
+Note "subscription $($account.id)"
 
 if (-not $PlanName) { $PlanName = "$Name-plan" }
 if (-not $PlanResourceGroup) { $PlanResourceGroup = $ResourceGroup }
