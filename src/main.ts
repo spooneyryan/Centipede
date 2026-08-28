@@ -1142,12 +1142,39 @@ el<HTMLButtonElement>("btnEditor").addEventListener("click", () => {
 });
 
 // --- Pointer wiring. -------------------------------------------------------
-canvas.addEventListener("mousemove", (e) => {
+
+/** Is the cursor physically over the playfield? Only the level editor cares:
+ * it paints cells, so it must not paint from a cursor that is somewhere else
+ * on the page. */
+function overCanvas(e: MouseEvent): boolean {
+  const r = canvas.getBoundingClientRect();
+  return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+}
+
+// Tracked on the WINDOW rather than the canvas.
+//
+// A canvas-scoped listener stops firing the instant the cursor leaves the
+// element, which freezes the blaster wherever it happened to be — you slide
+// off the edge of the playfield and the ship simply stops answering, which
+// reads as the game losing the mouse. Watching the window means the pointer
+// keeps tracking wherever the cursor goes, and since the virtual pointer is
+// clamped to the blaster's box anyway, a cursor outside the playfield just
+// maps to the nearest legal position. Coming back moves the blaster on the
+// first pixel, with nothing banked up to unwind.
+window.addEventListener("mousemove", (e) => {
   if (editor.isOpen) {
+    if (!overCanvas(e)) {
+      editor.pointerLeave();
+      return;
+    }
     const p = display.toWorld(e.clientX, e.clientY);
     editor.pointer(p.x, p.y, e.buttons);
     return;
   }
+  // A modal dialog is UI, not game input -- the same rule `keyboardIsBusy`
+  // already applies to keys. Without this, sweeping the cursor across the
+  // Settings dialog would drag the blaster along underneath it.
+  if (uiHasFocus()) return;
   if (pointerLocked) {
     // Captured: relative motion only. The canvas is a 1920x1080 world scaled
     // to fit, so CSS pixels of movement have to be divided by that scale to
@@ -1187,7 +1214,6 @@ window.addEventListener("mouseup", () => {
   mouseFire = false;
   editor.pointerUp();
 });
-canvas.addEventListener("mouseleave", () => editor.pointerLeave());
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // --- Global keys the action map does not own. ------------------------------

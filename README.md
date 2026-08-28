@@ -167,10 +167,19 @@ would eventually surface on the far side and warp through it.
 Both use one shared sweep (`src/collide.ts`), so the pointer and the blaster
 cannot disagree about where a wall is.
 
+The cursor is tracked on the **window**, not on the canvas. A canvas-scoped
+listener stops firing the moment the cursor leaves the element, so sliding off
+the edge of the playfield froze the blaster wherever it stood — it read as the
+game losing the mouse. Watching the window means the pointer keeps tracking
+wherever the cursor goes, and the clamp maps it to the nearest legal spot: run
+the cursor along under the playfield and the blaster still follows you left and
+right. A modal dialog is the one exception — that is UI, not game input.
+
 **Pointer lock needs a real browser.** Embedded webviews often block it by
 Permissions Policy (Claude Code's preview pane does), and the game falls back
-to plain absolute cursor tracking there — which brings the dead zone back,
-because an absolute cursor really is outside the box.
+to plain absolute cursor tracking there. Control is kept either way; what lock
+adds is that overshooting an axis no longer costs you anything on the way back,
+because a captured cursor cannot overshoot in the first place.
 
 ## Tuning the game
 
