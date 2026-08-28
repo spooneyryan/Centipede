@@ -18,16 +18,40 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: center;
+  /* `safe` is doing real work here. Plain `center` splits an overflow between
+   * BOTH ends, and the half that goes off the top can never be scrolled back
+   * to, because scrollTop does not go negative. `safe` drops to start
+   * alignment the moment the content stops fitting, so nothing is stranded.
+   * The plain value stays first as the fallback for anything that does not
+   * understand the keyword. */
   justify-content: center;
+  justify-content: safe center;
   gap: 10px;
   padding: 10px;
+  /* The stage takes its height from its width, so a short window can ask for
+   * more room than exists -- and the toolbar wraps to a second row on a
+   * narrow one, which no fixed budget below can predict. Scroll rather than
+   * clip: the alternative is buttons that are on the page and unreachable. */
+  overflow: auto;
 }
 
 #stage {
   position: relative;
   width: 100%;
-  max-width: calc(177.78vh - 36px);
-  flex: 0 1 auto;
+  /* The canvas is 16:9 and sized from its WIDTH, so capping width is how its
+   * height gets capped. 177.78vh -- 16/9 of the viewport -- is the width at
+   * which the canvas alone would fill the window exactly, so everything else
+   * has to be subtracted before that: 10px of padding top and bottom, three
+   * 10px gaps, and the legend, toolbar and netstats rows. Call it 140px.
+   *
+   * It used to subtract 36px, about a quarter of the true cost, and the
+   * difference went off the bottom of the screen -- which is where the
+   * buttons are. */
+  max-width: calc((100vh - 140px) * 16 / 9);
+  /* Never shrink. Shrinking this box does not shrink the canvas inside it
+   * (that is sized by aspect-ratio off its own width), it just slides the
+   * canvas and the absolutely-positioned panels out of their container. */
+  flex: 0 0 auto;
 }
 
 /* The canvas is always 1920x1080 internally; the display module letterboxes. */
