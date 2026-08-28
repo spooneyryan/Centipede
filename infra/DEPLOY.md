@@ -229,6 +229,48 @@ mechanism. The alternative was a cross-organisation token, which goes wrong
 loudly rather than quietly, but has to be created, held and rotated by an
 account that is not the one running Azure.
 
+### One click, in the browser: permit the GameBase repository
+
+The first run of a pipeline that checks out a *second* repository parks on a
+**resource authorization checkpoint** and waits for a human. Open the run and
+choose **View** -> **Permit**; every queued run releases at once, and it is
+not asked again.
+
+It has to be the browser. `pipelinePermissions` is a preview-only API and
+`az devops invoke` refuses it at every api-version -- *"--resource and
+--api-version combination is not correct"*. Nothing in the CLI grants this.
+
+A run stuck here reports `Checkpoint.Authorization: inProgress` in its
+timeline and sits at `notStarted` indefinitely. It looks exactly like waiting
+for a build agent, which is the wrong thing to go and investigate.
+
+### Validation is whole-pipeline, and it happens before any job
+
+This is the trap that cost four runs. A stage naming a service connection or
+an environment that does not exist fails **the entire pipeline** at compile
+time -- so the Build stage never ran and no run said a word about the game.
+`stagesToSkip` does not help: it skips execution, not validation.
+
+That is why the Deploy stage sits behind `${{ if parameters.deploy }}`. A
+`${{ }}` is evaluated before validation, so when it is off the stage is not in
+the YAML being validated at all, and everything that needs no credentials runs
+regardless. Flip the parameter's default once `rustipede-arm` exists, or tick
+the box on a manual run.
+
+The `rustipede-production` environment the deployment job names had to be
+created too. `az` can do it, but only away from the paths that look obvious:
+
+```powershell
+az devops invoke --org https://dev.azure.com/MorrisonHotel --area distributedtask --resource environments --route-parameters project=Centipede --http-method POST --api-version 7.1 --in-file env.json
+```
+
+Two things there are load-bearing. **The api-version must not be a preview
+one** -- `az devops invoke` parses `7.1-preview.1` into `7.1.1`, calls
+`float()` on it, and dies. And this cannot be done with `az rest`: the token
+from `az account get-access-token --resource 499b84ac-...` is refused by
+`dev.azure.com`, which answers with an HTML sign-in page and an HTTP 200, so
+it fails as a *success* with an empty body.
+
 ### What it still needs from you
 
 One thing, and it is a credential, so it is yours to create.
