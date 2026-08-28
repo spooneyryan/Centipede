@@ -49,6 +49,24 @@ resources:
         branches:
           include: [dev]
 
+# WHY THIS EXISTS. A stage that names a service connection which does not
+# exist fails the WHOLE pipeline at validation -- before any job runs, so the
+# checks never happen either. That is not a hypothetical: three runs failed
+# this way, reporting nothing about the game, because the deploy could not
+# find `rustipede-arm`.
+#
+# A `${{ if }}` is evaluated at compile time, so a Deploy stage behind one is
+# not in the YAML being validated at all. That lets everything else be useful
+# while the connection does not exist yet.
+#
+# Flip the default to true once you have created it (see DEPLOY.md). Until
+# then you can still tick the box on a manual run.
+parameters:
+  - name: deploy
+    displayName: "Deploy to App Service (needs the rustipede-arm connection)"
+    type: boolean
+    default: false
+
 variables:
   buildConfiguration: Release
   # Set these in the pipeline's own variables, or edit them here.
@@ -154,57 +172,69 @@ stages:
           - publish: $(Build.ArtifactStagingDirectory)/rustipede.zip
             artifact: rustipede
 
-  - stage: Deploy
-    # Pull requests build and get checked, but only main ships.
-    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
-    jobs:
-      - deployment: Deploy
-        environment: rustipede-production
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - download: current
-                  artifact: rustipede
+          # A green build that did not ship should say so, rather than being
+          # mistaken for one that did.
+          - ${{ if not(parameters.deploy) }}:
+              - script: |
+                  echo "Built and proved, but NOT deployed."
+                  echo "The Deploy stage is compiled out until the rustipede-arm"
+                  echo "service connection exists -- see infra/DEPLOY.md. The"
+                  echo "artifact above is deployable; ./infra/provision.ps1 -Deploy"
+                  echo "ships the working tree in the meantime."
+                displayName: This run did not deploy
 
-                - task: AzureWebApp@1
-                  displayName: Deploy to App Service
-                  inputs:
-                    azureSubscription: $(azureSubscription)
-                    appType: webAppLinux
-                    appName: $(webAppName)
-                    package: $(Pipeline.Workspace)/rustipede/rustipede.zip
-                    # Matches the runtime provision.ps1 sets.
-                    runtimeStack: "DOTNETCORE|10.0"
+  - ${{ if parameters.deploy }}:
+    - stage: Deploy
+      # Pull requests build and get checked, but only main ships.
+      condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+      jobs:
+        - deployment: Deploy
+          environment: rustipede-production
+          strategy:
+            runOnce:
+              deploy:
+                steps:
+                  - download: current
+                    artifact: rustipede
 
-                # A deploy that returns 200 has proved the site is up. It has
-                # not proved the RELAY is up, and the relay is the half that
-                # silently breaks -- WebSockets are off by default on App
-                # Service, and when they are off nothing appears in the log
-                # because the request never reaches the app.
-                #
-                # A plain GET to the socket path must answer 400
-                # (not-a-websocket-request). 404 means the app is not routing
-                # it; anything else means the relay is not running.
-                - script: |
-                    set -e
-                    url="https://$(webAppName).azurewebsites.net"
-                    echo "Waiting for $url to come back up..."
-                    for i in $(seq 1 30); do
-                      code=$(curl -s -o /dev/null -w '%{http_code}' "$url/" || true)
-                      if [ "$code" = "200" ]; then break; fi
-                      sleep 5
-                    done
-                    test "$code" = "200" || { echo "Site did not return 200 (got $code)"; exit 1; }
-                    echo "Site is up."
+                  - task: AzureWebApp@1
+                    displayName: Deploy to App Service
+                    inputs:
+                      azureSubscription: $(azureSubscription)
+                      appType: webAppLinux
+                      appName: $(webAppName)
+                      package: $(Pipeline.Workspace)/rustipede/rustipede.zip
+                      # Matches the runtime provision.ps1 sets.
+                      runtimeStack: "DOTNETCORE|10.0"
 
-                    relay=$(curl -s -o /dev/null -w '%{http_code}' "$url/ws/mp" || true)
-                    echo "Relay probe returned $relay"
-                    if [ "$relay" != "400" ]; then
-                      echo "The relay is not answering. 400 is expected here:"
-                      echo "it means the endpoint exists and refused a non-WebSocket request."
-                      echo "Check that WebSockets are enabled: infra/provision.ps1 sets this."
-                      exit 1
-                    fi
-                    echo "Relay is up."
-                  displayName: Smoke test the site and the relay
+                  # A deploy that returns 200 has proved the site is up. It has
+                  # not proved the RELAY is up, and the relay is the half that
+                  # silently breaks -- WebSockets are off by default on App
+                  # Service, and when they are off nothing appears in the log
+                  # because the request never reaches the app.
+                  #
+                  # A plain GET to the socket path must answer 400
+                  # (not-a-websocket-request). 404 means the app is not routing
+                  # it; anything else means the relay is not running.
+                  - script: |
+                      set -e
+                      url="https://$(webAppName).azurewebsites.net"
+                      echo "Waiting for $url to come back up..."
+                      for i in $(seq 1 30); do
+                        code=$(curl -s -o /dev/null -w '%{http_code}' "$url/" || true)
+                        if [ "$code" = "200" ]; then break; fi
+                        sleep 5
+                      done
+                      test "$code" = "200" || { echo "Site did not return 200 (got $code)"; exit 1; }
+                      echo "Site is up."
+
+                      relay=$(curl -s -o /dev/null -w '%{http_code}' "$url/ws/mp" || true)
+                      echo "Relay probe returned $relay"
+                      if [ "$relay" != "400" ]; then
+                        echo "The relay is not answering. 400 is expected here:"
+                        echo "it means the endpoint exists and refused a non-WebSocket request."
+                        echo "Check that WebSockets are enabled: infra/provision.ps1 sets this."
+                        exit 1
+                      fi
+                      echo "Relay is up."
+                    displayName: Smoke test the site and the relay
