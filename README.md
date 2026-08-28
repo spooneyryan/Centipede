@@ -91,6 +91,14 @@ hold a WebSocket per player, and Static Web Apps back onto HTTP-triggered
 Functions that cannot. The full write-up, including the three non-default
 settings and the per-region quota trap, is in [infra/DEPLOY.md](infra/DEPLOY.md).
 
+`azure-pipelines.yml` does the same build on every push to `main`. Because
+GameBase is referenced by path, the pipeline checks out **two** repositories
+and places them so those paths resolve untouched — the game at
+`Games/Centipede/TypeScript`, GameBase at `GameBase/GameBase`, both under one
+root. That layout was reproduced locally and every step passed. What it still
+needs is two service connections, and both are credentials: see
+[DEPLOY.md](infra/DEPLOY.md#what-it-still-needs-from-you).
+
 ## Desktop
 
 ```powershell
