@@ -141,6 +141,8 @@ const settings = defineSettings<{
   musicOn: boolean;
   musicVolume: number;
   mouseControl: boolean;
+  rawMouse: boolean;
+  showFps: boolean;
   showGrid: boolean;
   glowEffects: boolean;
   skin: string;
@@ -166,6 +168,8 @@ const settings = defineSettings<{
     musicOn: { type: "boolean", default: true },
     musicVolume: { type: "number", min: 0, max: 100, step: 5, default: 55 },
     mouseControl: { type: "boolean", default: true },
+    rawMouse: { type: "boolean", default: true },
+    showFps: { type: "boolean", default: false },
     showGrid: { type: "boolean", default: true },
     glowEffects: { type: "boolean", default: true },
     skin: { type: "enum", values: SKIN_CHOICES, default: "classic" },
@@ -365,7 +369,11 @@ const input = createInput({
     down: { keys: ["ArrowDown", "KeyS"], pad: { buttons: [13], axis: { index: 1, dir: 1 } } },
     fire: { keys: ["Space"], pad: { buttons: [0, 7] } },
     start: { keys: ["Enter"], pad: { buttons: [9] } },
-    pause: { keys: ["KeyP"], pad: { buttons: [8] } },
+    // KeyP is handled in the keydown listener instead: resuming re-grabs
+    // the mouse, and requestPointerLock only works from a real gesture --
+    // polling the action map inside rAF is not one. The pad keeps it here,
+    // because a pad player is not steering with a captured mouse anyway.
+    pause: { keys: [], pad: { buttons: [8] } },
     restart: { keys: ["KeyR"], pad: { buttons: [3] }, preventDefault: false },
   },
 });
@@ -427,6 +435,44 @@ function nudgePointer(dx: number, dy: number): void {
  * play, so there is nothing on screen for it to disagree with. */
 function placePointer(x: number, y: number): void {
   movePointerTo(x, y);
+}
+
+/** Take the mouse.
+ *
+ * `unadjustedMovement: true` asks the platform for RAW deltas -- no pointer
+ * ballistics, no OS acceleration curve -- so the same physical sweep always
+ * moves the blaster the same distance whether you flick it or ease it.
+ * Chrome and Edge implement it; Firefox and Safari reject the options object
+ * or ignore the flag, so the second attempt is the plain one.
+ *
+ * It has nothing to do with frame rate. The mouse is read at its own polling
+ * rate either way -- see `nudgePointer`'s caller for where that is consumed.
+ */
+function grabPointer(): void {
+  // Two ways an older browser refuses the options object, and they need the
+  // same answer. It can reject the promise -- Safari -- or it can throw
+  // synchronously on being handed an argument at all. Swallowing the throw and
+  // stopping there was a bug: pointer lock never engaged on such a browser,
+  // silently, because the fallback lived only on the promise path.
+  const attempt = (options?: { unadjustedMovement: boolean }): Promise<void> | undefined | "threw" => {
+    try {
+      return (canvas.requestPointerLock as (o?: unknown) => unknown)(options) as Promise<void> | undefined;
+    } catch {
+      return "threw";
+    }
+  };
+  const plain = (): void => {
+    const p = attempt();
+    // A rejection here is not recoverable and not worth a console entry: no
+    // user gesture, or the ~1s lockout after Escape released the pointer. The
+    // player still has the absolute cursor, which works.
+    if (p && p !== "threw" && typeof p.catch === "function") p.catch(() => {});
+  };
+
+  if (!settings.get("rawMouse")) { plain(); return; }
+  const raw = attempt({ unadjustedMovement: true });
+  if (raw === "threw") { plain(); return; }
+  if (raw && typeof raw.catch === "function") raw.catch(() => plain());
 }
 
 function wantsPointerLock(): boolean {
@@ -1215,7 +1261,16 @@ function overChrome(e: MouseEvent): boolean {
 // clamped to the blaster's box anyway, a cursor outside the playfield just
 // maps to the nearest legal position. Coming back moves the blaster on the
 // first pixel, with nothing banked up to unwind.
-window.addEventListener("mousemove", (e) => {
+// `pointermove`, not `mousemove`, for one reason: `getCoalescedEvents`.
+//
+// A 1000 Hz mouse produces roughly eight samples between two frames of a
+// 120 Hz display, and the browser merges them into one `mousemove` whose
+// movement is their SUM. For a pointer that only had to end up in the right
+// place that is identical -- but this pointer is swept against the mushroom
+// field on the way, and one long sweep is not the same as eight short ones.
+// It rounds corners it should have caught on. Replaying the samples feeds the
+// same total displacement through the collision in the order it happened.
+window.addEventListener("pointermove", (e) => {
   if (editor.isOpen) {
     // The editor paints cells, so it wants the canvas and nothing else — its
     // own panel covers the right-hand third of the field it is painting. The
@@ -1239,7 +1294,19 @@ window.addEventListener("mousemove", (e) => {
     // become world pixels — otherwise sensitivity would change with the
     // window size.
     const scale = display.viewport.scale || 1;
-    nudgePointer(e.movementX / scale, e.movementY / scale);
+    const samples = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [];
+    // Guard rather than trust. Coalesced events reporting zero movement under
+    // pointer lock has been a real browser bug, and aiming silently dying is
+    // far worse than losing the sub-frame detail, so fall back the moment the
+    // samples disagree with the event that carried them.
+    let dx = 0;
+    let dy = 0;
+    for (const sample of samples) { dx += sample.movementX; dy += sample.movementY; }
+    if (samples.length === 0 || ((dx === 0 && dy === 0) && (e.movementX !== 0 || e.movementY !== 0))) {
+      nudgePointer(e.movementX / scale, e.movementY / scale);
+      return;
+    }
+    for (const sample of samples) nudgePointer(sample.movementX / scale, sample.movementY / scale);
     return;
   }
   const p = display.toWorld(e.clientX, e.clientY);
@@ -1256,12 +1323,7 @@ canvas.addEventListener("mousedown", (e) => {
     const p = display.toWorld(e.clientX, e.clientY);
     placePointer(p.x, p.y);
     // Take the mouse. It stays taken until Escape.
-    if (wantsPointerLock()) {
-      const req = canvas.requestPointerLock() as unknown as Promise<void> | undefined;
-      // Chrome returns a promise and rejects if the document lost focus;
-      // swallowing it keeps a failed grab from spilling into the console.
-      if (req && typeof req.catch === "function") req.catch(() => {});
-    }
+    if (wantsPointerLock()) grabPointer();
   }
   mouseFire = true;
   soundBank.player.resume();
@@ -1285,20 +1347,32 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
+  // P: pause, and the mouse follows the pause. Handled here rather than
+  // through the action map because resuming re-grabs the mouse, which needs a
+  // real user gesture.
+  if (e.code === "KeyP" && !editor.isOpen && mode !== "replay") {
+    togglePauseAndMouse(true);
+    e.preventDefault();
+    return;
+  }
+
   if (e.code === "Escape") {
-    // Escape means "give me my cursor back" before it means anything else, so
-    // a captured mouse can never cost you a co-op match.
-    if (pointerLocked || document.pointerLockElement === canvas) {
-      document.exitPointerLock();
-      return;
-    }
+    // The browser releases a locked pointer on Escape whatever this handler
+    // does, so the only question is what else Escape means. During a run it
+    // means pause -- and since the mouse is being taken away anyway, pausing
+    // is the one behaviour that leaves the game in a coherent state.
     if (mode === "replay") {
       exitReplay();
-    } else if (coop.running) {
-      coop.leave();
-    } else if (!lobby.panel.classList.contains("hidden")) {
-      lobby.panel.classList.add("hidden");
+      return;
     }
+    if (!lobby.panel.classList.contains("hidden")) {
+      lobby.panel.classList.add("hidden");
+      return;
+    }
+    // Leaving a co-op match used to live here. It is the Leave button in the
+    // Co-op panel now: Escape during a match pauses it for both players, which
+    // is what you want far more often than dropping out of it.
+    togglePauseAndMouse(true);
   }
 });
 
@@ -1330,6 +1404,27 @@ function togglePause(): void {
   }
 }
 
+/** Pause and hand the mouse back; resume and take it again.
+ *
+ * `gesture` must be true only when called from a real user event. Chrome
+ * grants pointer lock from a gesture and refuses it otherwise, and it refuses
+ * for about a second after an Escape has released the lock -- so a resume that
+ * cannot re-grab falls back to the absolute cursor rather than pretending. */
+function togglePauseAndMouse(gesture: boolean): void {
+  const wasPaused = isPaused();
+  togglePause();
+  updateLegend();
+
+  if (!wasPaused) {
+    // Pausing. A captured mouse with a paused game is a cursor nobody can
+    // reach, so give it back unconditionally.
+    if (pointerLocked || document.pointerLockElement === canvas) document.exitPointerLock();
+    return;
+  }
+  // Resuming: take it back, if the player had it and this is a real gesture.
+  if (gesture && !pointerLocked && wantsPointerLock()) grabPointer();
+}
+
 const legend = el<HTMLElement>("legend");
 function updateLegend(): void {
   if (editor.isOpen) {
@@ -1339,15 +1434,15 @@ function updateLegend(): void {
     legend.innerHTML = "<b>REPLAY</b> &nbsp;·&nbsp; watching a recorded run &nbsp;·&nbsp; <b>ESC</b> to exit";
   } else if (mode === "coop") {
     const seat = coop.running ? `you are <b>PLAYER ${coop.seat + 1}</b> (marked ⌄)` : "waiting";
-    const release = pointerLocked ? " &nbsp;·&nbsp; <b>ESC</b> release the mouse" : "";
+    const release = "";
     legend.innerHTML =
-      `<b>CO-OP</b> &nbsp;·&nbsp; ${seat} &nbsp;·&nbsp; <b>MOUSE</b>/<b>WASD</b> move &nbsp;·&nbsp; <b>SPACE</b> fire &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>R</b> rematch${release}`;
+      `<b>CO-OP</b> &nbsp;·&nbsp; ${seat} &nbsp;·&nbsp; <b>MOUSE</b>/<b>WASD</b> move &nbsp;·&nbsp; <b>SPACE</b> fire &nbsp;·&nbsp; <b>P</b>/<b>ESC</b> pause &nbsp;·&nbsp; <b>R</b> rematch${release}`;
   } else if (pointerLocked) {
     legend.innerHTML =
-      "<b>MOUSE CAPTURED</b> &nbsp;·&nbsp; move to fly the blaster &nbsp;·&nbsp; <b>CLICK</b> fire &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>R</b> restart &nbsp;·&nbsp; <b>ESC</b> release the mouse";
+      "<b>MOUSE CAPTURED</b> &nbsp;·&nbsp; move to fly the blaster &nbsp;·&nbsp; <b>CLICK</b> fire &nbsp;·&nbsp; <b>R</b> restart &nbsp;·&nbsp; <b>P</b>/<b>ESC</b> pause and release the mouse";
   } else {
     legend.innerHTML =
-      "<b>CLICK</b> to capture the mouse &nbsp;·&nbsp; <b>&larr; &uarr; &rarr; &darr;</b> / <b>WASD</b> move &nbsp;·&nbsp; <b>SPACE</b> fire &nbsp;·&nbsp; <b>ENTER</b> start &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>ESC</b> release";
+      "<b>CLICK</b> to capture the mouse &nbsp;·&nbsp; <b>&larr; &uarr; &rarr; &darr;</b> / <b>WASD</b> move &nbsp;·&nbsp; <b>SPACE</b> fire &nbsp;·&nbsp; <b>ENTER</b> start &nbsp;·&nbsp; <b>P</b>/<b>ESC</b> pause";
   }
 }
 
@@ -1401,6 +1496,36 @@ function updateMusic(): void {
   // Levels are mapped in pairs, so this is a no-op on half of them and a
   // crossfade on the other half -- and a retried level never restarts it.
   else void musicBank.music.playFor(g.level);
+}
+
+/** The frame-rate readout.
+ *
+ * `perf` is already sampling every frame to decide when to shed the glow
+ * effects, so this is a second reader of numbers the game was collecting
+ * anyway rather than a new measurement.
+ *
+ * It shows the RENDER rate, which on a 120 Hz display is 120. The simulation
+ * is a different number and always 60: `TPS` is fixed, every input is stamped
+ * to a tick, and two machines agree because they agree on that. A faster
+ * screen draws more frames of the same 60 ticks; it does not simulate more.
+ */
+const fpsReadout = el<HTMLElement>("fps");
+let fpsShownAt = 0;
+function updateFps(): void {
+  if (!settings.get("showFps")) {
+    if (fpsReadout.textContent !== "") fpsReadout.textContent = "";
+    return;
+  }
+  // Four times a second. The number is a rolling median already, and a value
+  // that changes every frame is unreadable.
+  const now = performance.now();
+  if (now - fpsShownAt < 250) return;
+  fpsShownAt = now;
+
+  const { current, min } = perf.stats;
+  if (current === null) { fpsReadout.textContent = "-- fps"; return; }
+  const low = min === null ? "" : `  (low ${Math.round(min)})`;
+  fpsReadout.textContent = `${Math.round(current)} fps${low}${perfDegraded ? "  glow off" : ""}`;
 }
 
 const loop = createLoop({
@@ -1464,6 +1589,7 @@ const loop = createLoop({
     clock += dt;
     perf.frame(performance.now());
     updateMusic();
+    updateFps();
 
     display.clear("#000");
     if (editor.isOpen) {
@@ -1575,6 +1701,9 @@ const lifecycle = createLifecycle({
   },
   get studioBusy() {
     return studio.busy;
+  },
+  get paused() {
+    return isPaused();
   },
   get pointerLocked() {
     return pointerLocked;

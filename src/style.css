@@ -222,3 +222,21 @@ dialog h3.section {
   color: var(--game-text-primary, #cfe3ff);
 }
 .tune-row.changed .tune-value { color: var(--game-action-primary, #57d977); font-weight: 600; }
+
+/* The frame-rate readout, over the top-left of the playfield. It never takes
+ * a pointer event: the editor reads what to paint from the event target, so an
+ * overlay that could BE the target would blank out the cells it covers. */
+#fps {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  pointer-events: none;
+  /* Absolutely positioned with no width, so it shrinks to its text -- and in a
+     narrow containing block it shrank to ONE CHARACTER and ran down the side
+     of the screen. Measured 26px wide by 64px tall before this line. */
+  white-space: nowrap;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--game-text-muted, #6b7c96);
+  text-shadow: 0 1px 3px #000, 0 0 8px #000;
+}

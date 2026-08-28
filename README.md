@@ -19,6 +19,7 @@ so it picks up everything the framework offers:
 | **Skins** | The page chrome wears the skin contract's `--game-*` tokens. The canvas defaults to the original palette (pixel-perfect); pick a built-in skin, derive one from a hue, or import a skin file. |
 | **Controller** | `platform/input` — keyboard and gamepad behind one action map (d-pad/left stick move, A/RT fire, Start starts, button 8 pauses, Y restarts). |
 | **Telemetry** | `createTelemetry` — off by default, nothing identifying; every GameBase module reports into it (`loop.overrun`, `document.rejected`, …). Needs an endpoint configured in Settings. |
+| **FPS counter** | `Show FPS` in Settings. It reads the same samples `core/perf` already collects to decide when to shed the glow, and reports the **render** rate — the simulation is 60 Hz and fixed. |
 | **Perf scaling** | `core/perf` — when a machine falls below its own baseline frame rate, the glow effects shed automatically. |
 
 ## Run it
@@ -238,6 +239,43 @@ than by rectangle, and they suppress pointer input the way `keyboardIsBusy`
 already suppresses keys — otherwise scrolling the lobby would drag the blaster
 underneath it, and dragging in the editor's own panel would paint the columns
 it covers.
+
+**Pausing gives the mouse back.** `P` or `Escape` pauses, and pausing releases
+the pointer -- a captured mouse over a paused game is a cursor nobody can
+reach. Either key resumes and takes it again. Escape is not optional here: the
+browser releases a locked pointer on Escape whatever the page wants, so pausing
+is simply the only behaviour that leaves the game coherent afterwards. (Leaving
+a co-op match moved to the **Leave** button in the Co-op panel, because Escape
+during a match now pauses it for both players.)
+
+Re-grabbing can fail, and the game does not pretend otherwise. Pointer lock
+needs a real user gesture -- which is why `P` is handled in the keydown
+listener rather than through the action map, since polling that map inside
+`requestAnimationFrame` is not a gesture -- and Chrome additionally refuses for
+about a second after an Escape released the lock. A resume that cannot re-grab
+falls back to the absolute cursor, which still works.
+
+**Raw mouse input.** The pointer is taken with
+`requestPointerLock({ unadjustedMovement: true })`, which asks the platform for
+deltas with no pointer ballistics and no OS acceleration curve, so the same
+physical sweep always moves the blaster the same distance whether you flick it
+or ease it. Chrome and Edge implement it; Safari rejects the promise and older
+builds throw on being handed an argument at all, and both fall back to a plain
+grab. `Raw mouse` in Settings turns it off to compare.
+
+Motion is read from `pointermove` and its **coalesced** samples rather than
+`mousemove`. A 1000 Hz mouse produces about eight samples between two frames of
+a 120 Hz display, and the browser merges them into one event whose movement is
+their sum. For a pointer that only had to end up somewhere that is identical --
+but this pointer is swept against the mushrooms on the way, and one long sweep
+rounds corners that eight short ones catch on.
+
+None of that changes the frame rate, and none of it can. **The simulation is
+60 Hz and fixed**: every input is stamped to a tick, and two machines agree
+because they agree on that. A 120 Hz display already draws 120 frames of those
+60 ticks, because the loop is variable-delta and only the simulation is
+stepped. What raw input and coalescing buy is fidelity within a tick, not more
+ticks.
 
 **Pointer lock needs a real browser.** Embedded webviews often block it by
 Permissions Policy (Claude Code's preview pane does), and the game falls back

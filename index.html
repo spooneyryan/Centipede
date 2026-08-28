@@ -10,6 +10,11 @@
 <div id="app">
   <div id="stage">
     <canvas id="screen" width="1920" height="1080"></canvas>
+    <!-- Over the playfield, so it survives fullscreen. `pointer-events: none`
+         is load-bearing: the level editor decides what to paint from the
+         event's target, and an overlay that could be a target would blank out
+         the cells underneath it. -->
+    <div id="fps"></div>
 
     <!-- The level editor: chrome around the same canvas the game draws on. -->
     <aside id="editorPanel" class="panel hidden">
@@ -88,6 +93,8 @@
     <label class="field-row">Volume <input name="sfxVolume" type="range" min="0" max="100" step="5"></label>
     <label class="field-row">Music <input name="musicOn" type="checkbox"></label>
     <label class="field-row">Music volume <input name="musicVolume" type="range" min="0" max="100" step="5"></label>
+    <label class="field-row">Raw mouse (no OS acceleration) <input name="rawMouse" type="checkbox"></label>
+    <label class="field-row">Show FPS <input name="showFps" type="checkbox"></label>
     <label class="field-row">Mouse control <input name="mouseControl" type="checkbox"></label>
     <label class="field-row">Background grid <input name="showGrid" type="checkbox"></label>
     <label class="field-row">Glow effects <input name="glowEffects" type="checkbox"></label>
