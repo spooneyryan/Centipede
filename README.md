@@ -95,9 +95,17 @@ settings and the per-region quota trap, is in [infra/DEPLOY.md](infra/DEPLOY.md)
 GameBase is referenced by path, the pipeline checks out **two** repositories
 and places them so those paths resolve untouched — the game at
 `Games/Centipede/TypeScript`, GameBase at `GameBase/GameBase`, both under one
-root. That layout was reproduced locally and every step passed. What it still
-needs is two service connections, and both are credentials: see
-[DEPLOY.md](infra/DEPLOY.md#what-it-still-needs-from-you).
+root. That layout was reproduced locally and every step passed.
+
+GameBase is developed in a different Azure DevOps organisation, which a
+build's own token cannot reach, so the pipeline reads a **mirror** of it
+alongside this repo. That needs refreshing by hand — one command, in
+[DEPLOY.md](infra/DEPLOY.md#refreshing-it) — and refreshing it runs the
+checks against the new GameBase, which is the automatic version of the advice
+above about re-running them after a pull. It cannot deploy: a run triggered by
+another repository does not carry `refs/heads/main`. The one thing still
+outstanding is an ARM service connection, which is a credential and so yours
+to make.
 
 ## Desktop
 

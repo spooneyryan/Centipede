@@ -20,17 +20,34 @@ pr:
 
 # GameBase is referenced BY PATH -- vite.config.ts aliases @ccllc/* into it and
 # server/Server.csproj holds a ProjectReference to the relay -- so it has to be
-# ON DISK beside this repo before anything resolves. It lives in a different
-# Azure DevOps organisation, and a build only reaches across an organisation
-# boundary through a service connection: the pipeline's own token is scoped to
-# this one. DEPLOY.md has the two-minute version of creating `gamebase-repo`.
+# ON DISK beside this repo before anything resolves.
+#
+# It is developed in another Azure DevOps organisation, which a build's own
+# token cannot reach; this points at a MIRROR of it in this one. That is not
+# only about avoiding a cross-organisation token. Repository-resource triggers
+# only fire within an organisation, so mirroring is also what lets the trigger
+# below exist at all.
+#
+# The mirror does not refresh itself. DEPLOY.md has the one command.
 resources:
   repositories:
     - repository: GameBase
       type: git
-      name: Games/GameBase
+      name: Centipede/GameBase
       ref: refs/heads/dev
-      endpoint: gamebase-repo
+      # Refreshing the mirror runs the checks against the new GameBase. The
+      # README has always said to re-run them after pulling GameBase, on the
+      # grounds that they are cheap and they are what catches a breaking
+      # change; this is that, automatically.
+      #
+      # It does not deploy. A run triggered by another repository takes
+      # Build.SourceBranch from THAT repository, so this arrives as
+      # refs/heads/dev and the Deploy stage's condition -- which insists on
+      # refs/heads/main -- is false. GameBase can prove the game still works
+      # without being able to ship it.
+      trigger:
+        branches:
+          include: [dev]
 
 variables:
   buildConfiguration: Release

@@ -179,76 +179,73 @@ developed and verified against; `main` trails it. Pin it to a commit if you
 want the build frozen — but then CI stops telling you when GameBase breaks the
 game, which is most of what it is for.
 
+### GameBase is mirrored into this organisation
+
+GameBase is developed at `https://ccllc.visualstudio.com/Games/_git/GameBase`,
+in a **different** Azure DevOps organisation. A build's own token does not
+cross that boundary, and both cross-organisation options are awkward here: a
+Personal Access Token would have to be minted by whichever account can read
+`ccllc` -- not the one you use for Azure, they are different identities -- and
+the PAT-free Entra alternative needs both organisations on one tenant, which
+these are not.
+
+So a mirror lives beside this repo instead, at
+`https://dev.azure.com/MorrisonHotel/Centipede/_git/GameBase`, and the pipeline
+reads that. **No service connection is involved at all**, and a second thing
+falls out of it: repository-resource triggers only fire within an
+organisation, so mirroring is what makes the trigger below possible.
+
+#### Refreshing it
+
+The mirror does not update itself. After changes land in GameBase upstream:
+
+```powershell
+git -C C:\Users\sledz\source\GameBase\GameBase fetch origin --prune
+git -C C:\Users\sledz\source\GameBase\GameBase push https://dev.azure.com/MorrisonHotel/Centipede/_git/GameBase origin/main:refs/heads/main origin/dev:refs/heads/dev
+```
+
+It pushes the **remote-tracking** refs, not your local branches, so the mirror
+reflects what is actually upstream rather than whatever you happen to have
+checked out. Adding `mirror` as a named remote in the GameBase checkout would
+shorten this; it is spelled out in full because it touches a repository
+outside this project.
+
+Refreshing it **runs this pipeline** -- the trigger on the repository resource
+fires on `dev`. That is the point: the README has always said to re-run
+`npm run check` and `npm run typecheck` after pulling GameBase, because they
+are cheap and they are what catches a breaking change. Now it is automatic.
+
+It does **not** deploy. A run triggered by another repository takes
+`Build.SourceBranch` from *that* repository, so it arrives as `refs/heads/dev`
+and the Deploy stage -- which insists on `refs/heads/main` -- is skipped.
+GameBase can prove the game still works without being able to ship it.
+
+#### The trade
+
+A mirror is a copy, and a copy goes stale silently. A build that passes
+against a GameBase three weeks behind has told you nothing about the GameBase
+on your disk. Nothing here detects that: refreshing is a habit, not a
+mechanism. The alternative was a cross-organisation token, which goes wrong
+loudly rather than quietly, but has to be created, held and rotated by an
+account that is not the one running Azure.
+
 ### What it still needs from you
 
-Both remaining items are **credentials**, so they are yours to create. The
-YAML itself is checked: the cross-organisation repository-resource syntax
-(`type: git` + `endpoint:` + `name: Project/Repo`), the `ref:` property, and
-`path:` being relative to `$(Agent.BuildDirectory)` all match Microsoft's
-multi-repo checkout reference.
+One thing, and it is a credential, so it is yours to create.
 
-#### 1. `gamebase-repo` — reaching the other organisation
+**`rustipede-arm`** -- an ARM service connection named to match
+`azureSubscription` in the YAML. *Project settings -> Service connections ->
+New -> Azure Resource Manager -> Workload identity federation*. Creating it
+from the CLI needs a service principal, which needs directory permissions a
+personal account often does not have.
 
-GameBase lives at `https://ccllc.visualstudio.com/Games/_git/GameBase`, a
-*different* Azure DevOps organisation, and a build's own token is scoped to
-its own organisation. It cannot reach across without a service connection.
-
-**The catch is which account creates it.** The two organisations are not the
-same identity: signed in as the account that owns `MorrisonHotel`, `az devops
-project list` answers for `dev.azure.com/MorrisonHotel` and fails for `ccllc`
-— while `git ls-remote` against GameBase succeeds, because Git Credential
-Manager holds a *separate* cached credential for it. So the token below has to
-be minted while signed in as whichever account can actually read `ccllc`, not
-whichever one you use for Azure.
-
-*Project settings → Service connections → New → Azure Repos/Team Foundation
-Server*, connection URL `https://ccllc.visualstudio.com/`, authenticated with
-a Personal Access Token created at
-`https://ccllc.visualstudio.com/_usersSettings/tokens` scoped to **Code
-(read)**. Name the connection `gamebase-repo` exactly — the YAML names it.
-
-Microsoft now prefers a PAT-free alternative here: a **Azure DevOps** service
-connection type backed by Microsoft Entra workload identity federation. It is
-the better option *if it applies*, and it probably does not: it requires both
-organisations to be joined to the same Entra tenant, and a service principal
-added as a user to each. The evidence above says they are not the same
-identity, so expect the PAT route.
-
-#### 2. `rustipede-arm` — deploying
-
-An ARM service connection named to match `azureSubscription` in the YAML.
-*Project settings → Service connections → New → Azure Resource Manager →
-Workload identity federation*. Creating it from the CLI needs a service
-principal, which needs directory permissions a personal account often does
-not have.
-
-#### Then
-
-Both connections need authorising for the pipeline the first time it runs.
-The run pauses and offers a **permit** button on the run summary page, or you
-can pre-authorise under each connection's *Security*.
+It needs authorising for the pipeline the first time it runs: the run pauses
+and offers a **permit** button on the run summary page, or you can
+pre-authorise under the connection's *Security*.
 
 You do **not** need `az devops login`. The `az devops` extension picks up the
-`az login` credential, which is enough to list projects and repos and to
-create a pipeline; the PAT above is only for the cross-organisation *fetch*.
-
-### If you would rather not manage a cross-organisation token
-
-Mirroring GameBase into the `MorrisonHotel` organisation removes the problem
-entirely — a repository in the pipeline's own organisation needs no service
-connection at all, and the YAML simplifies to
-`- checkout: git://GameBase/GameBase`. It is not done here because GameBase is
-shared code with another owner, and pushing someone else's repository into a
-different organisation is their call rather than this project's.
-
-### What CI will not catch
-
-**A GameBase change cannot trigger this build.** Repository-resource triggers
-only fire for Azure Repos Git repositories in the *same* organisation, so the
-`refs/heads/dev` this pipeline pins will be picked up whenever something is
-pushed *here*, and never on its own. The README's advice to re-run
-`npm run check` and `npm run typecheck` after pulling GameBase still stands,
-and it is still a human step.
+`az login` credential, which is enough to list projects and repos, create a
+repository, and create a pipeline.
 
 ## Undo
 
