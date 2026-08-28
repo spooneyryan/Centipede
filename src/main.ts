@@ -114,6 +114,26 @@ const report = (name: string, data?: unknown): void => {
   else earlyReports.push([name, data]);
 };
 
+// Six tuning defaults changed, and changing a default is not enough on its
+// own. Settings persist the WHOLE value set the first time anything at all is
+// changed, so a knob nobody ever touched is still written to storage at
+// whatever the default was that day -- and on the next load that stored copy
+// wins over the new default. Anyone who had already played would keep the old
+// numbers and see no change.
+//
+// So the v1 -> v2 migration drops these keys, but ONLY where the stored value
+// is still the old default. A value deliberately moved off it survives: the
+// point is to stop a stale default masquerading as a choice, not to overwrite
+// choices. Everything absent falls back through `sanitize` to the new default.
+const RETUNED_IN_V2: ReadonlyArray<[`tune_${keyof Tuning}`, number]> = [
+  ["tune_maxBullets", 2],
+  ["tune_centipedeSpeed", 8.5],
+  ["tune_centipedeLevelGain", 1.15],
+  ["tune_fleaEvery", 5],
+  ["tune_coinChance", 22],
+  ["tune_coinLife", 7],
+];
+
 const settings = defineSettings<{
   soundOn: boolean;
   sfxVolume: number;
@@ -128,7 +148,15 @@ const settings = defineSettings<{
   windowBounds: string;
 } & Record<`tune_${keyof Tuning}`, number>>({
   namespace: "rustipede",
-  version: 1,
+  version: 2, // 2: six tuning defaults changed; see RETUNED_IN_V2 above.
+  migrate: (stored, from) => {
+    if (from >= 2) return stored;
+    const next = { ...(stored as Record<string, unknown>) };
+    for (const [key, wasDefault] of RETUNED_IN_V2) {
+      if (next[key] === wasDefault) delete next[key];
+    }
+    return next;
+  },
   fields: {
     soundOn: { type: "boolean", default: true },
     sfxVolume: { type: "number", min: 0, max: 100, step: 5, default: 80 },
@@ -1000,8 +1028,9 @@ function buildTuningRows(): void {
   }
 }
 
-/** Says whether what is on screen differs from the original game, and warns
- * that it only takes effect on the next run rather than the one in progress. */
+/** Says whether what is on screen differs from the SHIPPED defaults -- which
+ * are close to the 1981 game but deliberately not it any more -- and warns
+ * that a change takes effect on the next run, not the one in progress. */
 function refreshTuningStatus(): void {
   const shown = normalizeTuning(
     Object.fromEntries(
@@ -1012,7 +1041,7 @@ function refreshTuningStatus(): void {
     ),
   );
   if (isDefaultTuning(shown)) {
-    tuningStatus.textContent = "Matching the original game.";
+    tuningStatus.textContent = "Playing the shipped defaults.";
     return;
   }
   const changed = TUNING_FIELDS.filter((f) => shown[f.key] !== DEFAULT_TUNING[f.key]).length;

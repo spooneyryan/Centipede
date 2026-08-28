@@ -143,13 +143,13 @@ function freshGame(seed, players, tuning) {
   };
 
   const base = play(undefined);
-  check("the default tuning is the original game", fingerprint(base) === fingerprint(play(DEFAULT_TUNING)));
+  check("omitting a tuning is the same as passing DEFAULT_TUNING", fingerprint(base) === fingerprint(play(DEFAULT_TUNING)));
   check("the wider game actually runs", base.events.shots > 0 && base.score > 0, `score ${base.score}`);
 
   // Every knob must be reachable from the simulation. A field exposed in the
   // UI but wired to nothing is worse than no field at all.
   const NUDGE = {
-    fireCooldown: 0.3, maxBullets: 1, bulletSpeed: 900, playerSpeed: 260,
+    fireCooldown: 0.3, maxBullets: 4, bulletSpeed: 900, playerSpeed: 260,
     centipedeSpeed: 4, centipedeLevelGain: 3, centipedeMaxSpeed: 6, loneHeadBoost: 2.5,
     centipedeLength: 6, shroomHp: 1, shroomStartCount: 20, shroomMinCount: 10,
     shroomsBlockPlayer: 0,
@@ -166,6 +166,19 @@ function freshGame(seed, players, tuning) {
   // These only bite once a power-up is actually held, so they get their own
   // test below rather than a spawn-and-hope.
   const NEEDS_A_POWERUP = new Set(["powerSeconds", "shieldSeconds", "rapidFactor", "curveSteer"]);
+
+  // A nudge that happens to equal the default exercises nothing, and the
+  // failure it produces -- "changed nothing" -- reads as though the knob were
+  // unwired, sending you to look at the simulation instead of at this table.
+  // maxBullets sat exactly here once its default became 1.
+  const collided = TUNING_FIELDS
+    .filter((f) => !NEEDS_A_POWERUP.has(f.key) && NUDGE[f.key] === DEFAULT_TUNING[f.key])
+    .map((f) => f.key);
+  check(
+    "every nudge differs from the default it is testing against",
+    collided.length === 0,
+    `these nudges ARE the default, so they prove nothing: ${collided.join(", ")}`,
+  );
 
   for (const field of TUNING_FIELDS) {
     if (NEEDS_A_POWERUP.has(field.key)) continue;
@@ -363,11 +376,13 @@ function freshGame(seed, players, tuning) {
 // a restore that forgets it, and that bug desyncs live co-op at every level.
 {
   const seen = new Set();
-  // On seed 777 with these input streams: DYING runs 885..981 and 2141..2237,
-  // and LEVEL_CLEAR runs 3240..3336. So 900 and 2200 snapshot inside a death,
-  // 3280 inside a level clear, and 400 covers ordinary play. The assertion
-  // below fails if tuning ever shifts those spans out from under it.
-  for (const from of [400, 900, 2200, 3280]) {
+  // On seed 777 with these input streams: DYING runs 924..1021 and 3315..3412,
+  // and LEVEL_CLEAR runs 2299..2396. So 972 and 3363 snapshot inside a death,
+  // 2347 inside a level clear, and 400 covers ordinary play. The assertion
+  // below fails if tuning ever shifts those spans out from under it -- which
+  // it did, the moment the centipede was slowed from 8.5 cells/s to 7 and
+  // every one of the old ticks landed back in ordinary play.
+  for (const from of [400, 972, 2347, 3363]) {
     const a = freshGame(777, 2);
     for (let t = 0; t < from; t++) a.step([hostIn(t), joinIn(t)]);
     seen.add(a.state);

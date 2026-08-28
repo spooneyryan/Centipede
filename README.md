@@ -217,8 +217,12 @@ Everything that changes how the game *feels* lives in [src/tuning.ts](src/tuning
 as one `Tuning` value with one `TUNING_FIELDS` table beside it. The settings
 schema, the sanitizer, and the sliders in the Settings dialog are all generated
 from that table, so a range cannot drift between what the UI offers and what
-the game accepts. The defaults are the original constants exactly — a fresh
-install plays the Rust game to the tick.
+the game accepts. Most defaults are the original constants, imported from
+`config.ts` so the two cannot drift. Six are deliberately not, and they are
+marked `TUNED` with the original value beside them: one shot on screen (the
+1981 cabinet's rule, where the Rust port allowed two), a slower level-1
+centipede that ramps more gently, fleas every 7s, and coins that are rare
+(2.3%) and short-lived (5s) rather than common and lingering.
 
 `config.ts` keeps the **structural** constants (the 48x27 grid, the cell size,
 the row limits). Those are not tunable: the renderer and the level format are

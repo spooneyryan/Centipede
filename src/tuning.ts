@@ -16,7 +16,6 @@ import {
   BULLET_SPEED,
   CENTIPEDE_LEN,
   EXTRA_LIFE_EVERY,
-  MAX_BULLETS,
   PLAYER_LIVES,
   PLAYER_SPEED,
   SHROOM_HP,
@@ -114,17 +113,22 @@ export interface Tuning {
   scoreBonusShroom: number;
 }
 
-/** The original game, exactly: every default is the constant it replaced. */
+/** Mostly the original game: each default here is the constant it replaced,
+ * imported from config.ts so the two cannot drift.
+ *
+ * Six are deliberately not. They are marked TUNED below, with the original
+ * beside them, because a default that quietly disagrees with the constant it
+ * claims to be is worse than one that says so. */
 export const DEFAULT_TUNING: Tuning = {
   playerSpeed: PLAYER_SPEED,
   bulletSpeed: BULLET_SPEED,
   fireCooldown: BULLET_COOLDOWN,
-  maxBullets: MAX_BULLETS,
+  maxBullets: 1, // TUNED (MAX_BULLETS is 2). One shot in flight, as the 1981 cabinet.
   lives: PLAYER_LIVES,
   extraLifeEvery: EXTRA_LIFE_EVERY,
   centipedeLength: CENTIPEDE_LEN,
-  centipedeSpeed: 8.5,
-  centipedeLevelGain: 1.15,
+  centipedeSpeed: 7, // TUNED (was 8.5)
+  centipedeLevelGain: 1, // TUNED (was 1.15)
   loneHeadBoost: 1.45,
   centipedeMaxSpeed: 26,
   shroomHp: SHROOM_HP,
@@ -135,7 +139,7 @@ export const DEFAULT_TUNING: Tuning = {
   spiderSpeed: 300,
   spiderEvery: 9,
   fleaSpeed: 420,
-  fleaEvery: 5,
+  fleaEvery: 7, // TUNED (was 5)
   fleaThreshold: 24,
   fleaTrailGap: 2,
   scorpionSpeed: 260,
@@ -153,8 +157,8 @@ export const DEFAULT_TUNING: Tuning = {
   scoreScorpion: 1000,
   scoreSaucer: 1200,
 
-  coinChance: 22,
-  coinLife: 7,
+  coinChance: 2.3, // TUNED (was 22). Fractional -- see the 0.1 step below.
+  coinLife: 5, // TUNED (was 7)
   coinGravity: 900,
   coinBounce: 0.66,
   powerSeconds: 10,
@@ -217,7 +221,10 @@ export const TUNING_FIELDS: readonly TuningField[] = [
   { key: "saucerFromLevel", label: "Saucers from level", hint: "how long before they show up", min: 1, max: 20, step: 1, group: "Bugs" },
   { key: "spawnLevelGain", label: "Spawn rate per level", hint: "how much faster the bugs come each level", min: 0, max: 1, step: 0.02, group: "Bugs" },
 
-  { key: "coinChance", label: "Coin drop chance", hint: "in 100, per mushroom destroyed; 0 turns coins off", min: 0, max: 100, step: 1, unit: "%", group: "Coins" },
+  // step 0.1, not 1: settings snap every number to its step, so a whole-number
+  // step would round the 2.3 default down to 2 on the way in and there would
+  // be no way to ask for a fraction at all.
+  { key: "coinChance", label: "Coin drop chance", hint: "in 100, per mushroom destroyed; 0 turns coins off", min: 0, max: 100, step: 0.1, unit: "%", group: "Coins" },
   { key: "coinLife", label: "Coin lifetime", hint: "seconds before it gives up and vanishes", min: 1, max: 30, step: 0.5, unit: "s", group: "Coins" },
   { key: "powerSeconds", label: "Power-up duration", hint: "seconds of rapid fire, curve or ghost", min: 1, max: 60, step: 1, unit: "s", group: "Coins" },
   { key: "shieldSeconds", label: "Shield duration", hint: "seconds of invulnerability", min: 1, max: 60, step: 1, unit: "s", group: "Coins" },
@@ -244,7 +251,13 @@ export function normalizeTuning(raw: unknown): Tuning {
     const value = Number(source[field.key]);
     if (!Number.isFinite(value)) continue;
     const snapped = field.step >= 1 ? Math.round(value) : value;
-    out[field.key] = clamp(snapped, field.min, field.max);
+    // Rounded to 1e-6 -- the same precision `tuningHash` below already treats
+    // as significant. Settings snap every number to its step and a FRACTIONAL
+    // step does that in binary floating point, so a stored 2.3 comes back as
+    // 2.3000000000000003. The fingerprint never noticed, because it rounds
+    // too; `isDefaultTuning` compares with === and did, and announced a custom
+    // tuning for a game nobody had customised.
+    out[field.key] = Math.round(clamp(snapped, field.min, field.max) * 1e6) / 1e6;
   }
   return out;
 }
