@@ -18,11 +18,36 @@ pr:
   branches:
     include: [main]
 
+# GameBase is referenced BY PATH -- vite.config.ts aliases @ccllc/* into it and
+# server/Server.csproj holds a ProjectReference to the relay -- so it has to be
+# ON DISK beside this repo before anything resolves. It lives in a different
+# Azure DevOps organisation, and a build only reaches across an organisation
+# boundary through a service connection: the pipeline's own token is scoped to
+# this one. DEPLOY.md has the two-minute version of creating `gamebase-repo`.
+resources:
+  repositories:
+    - repository: GameBase
+      type: git
+      name: Games/GameBase
+      ref: refs/heads/dev
+      endpoint: gamebase-repo
+
 variables:
   buildConfiguration: Release
-  # Set these two in the pipeline's own variables, or edit them here.
+  # Set these in the pipeline's own variables, or edit them here.
   azureSubscription: rustipede-arm        # the ARM service connection name
   webAppName: rustipede
+  # NOTE ON PATHS. GameBase is found by relative path from two places -- the
+  # ../../../GameBase/GameBase/packages that vite.config.ts aliases, and the
+  # four levels up out of server/ that Server.csproj's ProjectReference walks.
+  # Both land on the same directory, three above the game, so checking the
+  # game out at Games/Centipede/TypeScript and GameBase at GameBase/GameBase
+  # under one root makes every one of those references resolve untouched.
+  #
+  # Steps still have to name their working directory: with two repositories
+  # the default is that shared root rather than either repository. They spell
+  # it out in full rather than through a variable of their own, because
+  # $(macro) expansion is not guaranteed to recurse.
 
 pool:
   vmImage: ubuntu-latest
@@ -32,6 +57,28 @@ stages:
     jobs:
       - job: Build
         steps:
+          # With more than one repository every checkout has to be named --
+          # including self -- and `path` is what puts them where the relative
+          # references expect to find each other.
+          - checkout: self
+            path: Games/Centipede/TypeScript
+            fetchDepth: 1
+
+          - checkout: GameBase
+            path: GameBase/GameBase
+            fetchDepth: 1
+
+          # Fail here, with a sentence, rather than sixty lines later inside a
+          # module resolution error that does not mention checkouts.
+          - script: |
+              set -e
+              test -d "$(Agent.BuildDirectory)/GameBase/GameBase/packages" ||
+                { echo "GameBase is not where vite.config.ts expects it."; exit 1; }
+              test -f "$(Agent.BuildDirectory)/GameBase/GameBase/packages/relay/CCLLC.Coop.Relay.csproj" ||
+                { echo "The relay is not where Server.csproj expects it."; exit 1; }
+              echo "GameBase at: $(git -C "$(Agent.BuildDirectory)/GameBase/GameBase" log --oneline -1)"
+            displayName: Check the two repositories landed beside each other
+
           - task: NodeTool@0
             displayName: Node 22
             inputs:
@@ -43,36 +90,40 @@ stages:
               version: "10.0.x"
               includePreviewVersions: true
 
-          # GameBase is referenced BY PATH (see vite.config.ts), so it has to
-          # be on disk beside this repo for the build to resolve @ccllc/*.
-          # Until it is published to the feed, the pipeline needs it checked
-          # out as a second repository -- see DEPLOY.md.
-          - checkout: self
-            fetchDepth: 1
-
+          # Only this repository installs. GameBase is consumed as source
+          # through the vite aliases, and the one thing those sources import
+          # from outside themselves -- React -- is already a dependency here.
+          # Its own workspace install would add a second React to the tree,
+          # which is the exact thing resolve.dedupe exists to undo.
           - script: npm ci
             displayName: npm ci
+            workingDirectory: $(Agent.BuildDirectory)/Games/Centipede/TypeScript
 
           - script: npm run typecheck
             displayName: Typecheck
+            workingDirectory: $(Agent.BuildDirectory)/Games/Centipede/TypeScript
 
           # The determinism proof. It runs two full co-op clients over a
           # simulated laggy link in Node, so a change that would desync two
           # players fails the build rather than the match.
           - script: npm run check
             displayName: Determinism and netcode checks
+            workingDirectory: $(Agent.BuildDirectory)/Games/Centipede/TypeScript
 
           - script: npm run build
             displayName: Build the client
+            workingDirectory: $(Agent.BuildDirectory)/Games/Centipede/TypeScript
 
           - script: dotnet publish server -c $(buildConfiguration) -o $(Build.ArtifactStagingDirectory)/site
             displayName: Publish the server
+            workingDirectory: $(Agent.BuildDirectory)/Games/Centipede/TypeScript
 
           # The client goes INSIDE the publish root. App Service deploys that
           # folder and nothing above it, so the local layout's ../dist does
           # not exist there; Program.cs probes wwwroot first for this reason.
           - script: cp -r dist $(Build.ArtifactStagingDirectory)/site/wwwroot
             displayName: Fold the client into wwwroot
+            workingDirectory: $(Agent.BuildDirectory)/Games/Centipede/TypeScript
 
           - task: ArchiveFiles@2
             displayName: Package

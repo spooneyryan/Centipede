@@ -141,37 +141,74 @@ half that breaks silently. A plain GET to the socket path answering 400 means
 "the endpoint exists and refused a non-WebSocket request" — which is the
 cheapest possible proof that co-op will work.
 
+### The two repositories
+
+The build needs **GameBase on disk beside this one**, because the game
+references it by path: `vite.config.ts` aliases `@ccllc/*` into
+`../../../GameBase/GameBase/packages`, and `server/Server.csproj` walks four
+levels out of `server/` to the relay. Both land on the same directory, three
+above the game.
+
+So the pipeline checks out two repositories and *places* them:
+
+| repository | `path:` |
+|---|---|
+| self | `Games/Centipede/TypeScript` |
+| GameBase | `GameBase/GameBase` |
+
+Three levels up from the first is the shared root, and the second is under it
+exactly where both references already look. Nothing in the game changes.
+
+Two consequences worth knowing:
+
+- **Every script step names its working directory.** With more than one
+  repository the default is the shared root, not either repository.
+- **Only this repo runs `npm ci`.** GameBase is consumed as *source* through
+  the vite aliases, and the one thing those sources import from outside
+  themselves is React, which is already a dependency here. Installing
+  GameBase's own workspace would put a second React in the tree — the exact
+  thing `resolve.dedupe` exists to undo.
+
+This layout is not theoretical: it was reproduced locally (clone both to those
+paths, then `npm ci`, `npm run typecheck`, `npm run check`, `npm run build`,
+`dotnet publish server`) and every step passed, producing a client bundle
+byte-identical to the deployed one.
+
+The pipeline pins GameBase to `refs/heads/dev`, which is what the game is
+developed and verified against; `main` trails it. Pin it to a commit if you
+want the build frozen — but then CI stops telling you when GameBase breaks the
+game, which is most of what it is for.
+
 ### What it still needs from you
 
-1. **A remote.** This repo is local-only. The pipeline has nothing to trigger
-   from until it is pushed somewhere.
+Both remaining items are **credentials**, so they are yours to create.
 
-2. **An Azure DevOps login.** `az devops` needs its own auth, separate from
-   `az login`:
+1. **A service connection to the GameBase organisation**, named
+   `gamebase-repo`. GameBase lives at
+   `https://ccllc.visualstudio.com/Games/_git/GameBase` — a *different*
+   Azure DevOps organisation — and a build's own token is scoped to its own
+   organisation, so it cannot reach across without one.
 
-   ```powershell
-   az devops login --organization https://dev.azure.com/<your-org>
-   ```
+   *Project settings → Service connections → New → Azure Repos/Team
+   Foundation Server*, connection URL `https://ccllc.visualstudio.com/`,
+   authenticate with a Personal Access Token from **that** organisation
+   (`https://ccllc.visualstudio.com/_usersSettings/tokens`) scoped to **Code
+   (read)**. Name it `gamebase-repo` exactly — the YAML names it.
 
-   It will ask for a Personal Access Token. Create one at
-   `https://dev.azure.com/<your-org>/_usersSettings/tokens` with **Code
-   (read & write)**, **Build (read & execute)** and **Service Connections
-   (read, query & manage)**.
+2. **An ARM service connection** named to match `azureSubscription` in the
+   YAML (`rustipede-arm`). *Project settings → Service connections → New →
+   Azure Resource Manager → Workload identity federation*. Creating it from
+   the CLI needs a service principal, which needs directory permissions a
+   personal account often does not have.
 
-3. **An ARM service connection** named to match `azureSubscription` in the
-   YAML (`rustipede-arm`). Easiest from the DevOps UI: *Project settings →
-   Service connections → New → Azure Resource Manager → Workload identity
-   federation*. Creating it from the CLI needs a service principal, which
-   needs directory permissions a personal account often does not have.
+Both need authorising for the pipeline the first time it runs — the run pauses
+and offers a "permit" button, or you can pre-authorise under each connection's
+*Security*.
 
-4. **GameBase on disk.** The game references it *by path* (see
-   `vite.config.ts`), so a hosted build agent needs it checked out alongside
-   this repo, or the packages published to the feed and the aliases swapped
-   for dependencies.
-
-Point 4 is the one that will actually stop the pipeline first, and it is a
-decision rather than a chore: path references are right while you are changing
-both sides at once, and wrong the moment the build leaves this machine.
+You do **not** need `az devops login`. The `az devops` extension picks up the
+`az login` credential, which is enough to list projects and repos and to
+create the pipeline; the PAT above is for the cross-organisation *fetch*, not
+for the CLI.
 
 ## Undo
 
