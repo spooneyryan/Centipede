@@ -25,6 +25,32 @@ and `/ws/mp` must share a host and a path prefix.
 Idempotent. Re-running is the intended way to reapply settings after someone
 has been in the portal. `-WhatIf` shows the plan and changes nothing.
 
+### Sharing a plan you already pay for
+
+```powershell
+./infra/provision.ps1 -PlanName max12charact-servplan -PlanResourceGroup max12charact_group -Deploy
+```
+
+A plan that already exists is **adopted** rather than created: its region and
+tier are read, not asserted, because it is someone else's resource and other
+apps are living on it. The app follows the plan's region — an app may sit in a
+different resource group from its plan, but never a different region.
+
+Two things get checked on the way in, because both fail confusingly:
+
+- **The plan's OS.** A plan is Linux or Windows for life and the app has to
+  match. Adopting a Windows plan stops with a sentence saying so, rather than
+  a create failure about site kinds.
+- **The plan's instance count.** Every app on a plan runs on every instance,
+  and the relay keeps its lobby registry in memory — so above capacity 1, two
+  players can land on different instances and never pair, intermittently, with
+  nothing in either log explaining it. The script warns if the count ever
+  moves above one.
+
+It also prints the neighbours it is sharing with. A B1 is one small VM between
+all of them, so if the site feels sluggish under load, that shared core is the
+first place to look.
+
 ## The three settings that are not the default
 
 The portal will not warn you about any of these, and each fails in a way that

@@ -49,6 +49,14 @@ param(
     # enough concurrent sockets to be worth playing on.
     [ValidateSet("F1", "B1", "B2", "S1", "P0v3")]
     [string] $Sku = "B1",
+    # An App Service plan to run on. If one by this name already exists it is
+    # ADOPTED -- its region and tier win, and neither is touched -- so the game
+    # can share a plan you are already paying for. Otherwise it is created.
+    [string] $PlanName,
+    # Where that plan lives, when it is not in $ResourceGroup. An app may sit
+    # in a different resource group from its plan; it may not sit in a
+    # different REGION, so adopting a plan moves the app to the plan's.
+    [string] $PlanResourceGroup,
     [string] $Subscription,
     # Build and publish the working tree once provisioning is done.
     [switch] $Deploy
@@ -122,7 +130,9 @@ if ($Subscription) {
 }
 Ok "$($account.name)  ($($account.user.name))"
 
-$plan = "$Name-plan"
+if (-not $PlanName) { $PlanName = "$Name-plan" }
+if (-not $PlanResourceGroup) { $PlanResourceGroup = $ResourceGroup }
+$plan = $PlanName
 
 # `az webapp list` only sees what this subscription owns, but the HOSTNAME is
 # global -- so a name someone else took fails at create time with a message
@@ -169,18 +179,50 @@ elseif ($PSCmdlet.ShouldProcess($ResourceGroup, "create resource group in $Locat
 }
 
 # --- App Service plan ------------------------------------------------------
-Step "App Service plan: $plan ($Sku, Linux)"
-$havePlan = Get-AzJson appservice plan show --name $plan --resource-group $ResourceGroup
+Step "App Service plan: $plan"
+$havePlan = Get-AzJson appservice plan show --name $plan --resource-group $PlanResourceGroup
+$planId = $null
+
 if ($havePlan) {
-    Ok "already there ($($havePlan.sku.name))"
-    if ($havePlan.sku.name -ne $Sku -and $PSCmdlet.ShouldProcess($plan, "change tier to $Sku")) {
-        Invoke-Az appservice plan update --name $plan --resource-group $ResourceGroup --sku $Sku --output none
-        Ok "tier changed to $Sku"
+    # Adopt it. Its region and tier are facts about a resource someone else
+    # may be relying on, so this reads them rather than asserting them.
+    $planId = $havePlan.id
+    $Location = $havePlan.location
+    Ok "adopting the existing plan: $($havePlan.sku.name) in $($havePlan.location), $($PlanResourceGroup)"
+
+    # A plan is Linux or Windows for life, and an app has to match. Catching
+    # it here beats a create failure that talks about site kinds.
+    $isLinux = ($havePlan.kind -like "*linux*") -or ($havePlan.reserved -eq $true)
+    if (-not $isLinux) {
+        throw "'$plan' is a Windows plan. This app publishes as DOTNETCORE|10.0 on Linux, " +
+              "which cannot run on it. Use a Linux plan, or drop -PlanName to create one."
+    }
+    Ok "Linux plan, matches the app"
+
+    # Every app on a plan runs on every instance of it, so the relay's
+    # in-memory lobby registry only holds together at capacity 1. Above that,
+    # two players can land on different instances and never pair -- and
+    # nothing in either log says so.
+    $capacity = [int] $havePlan.sku.capacity
+    if ($capacity -gt 1) {
+        Warn "This plan runs $capacity instances. The relay keeps its lobby"
+        Warn "registry in memory, so players on different instances will not"
+        Warn "see each other. Co-op needs this plan at capacity 1."
+    }
+    else {
+        Ok "single instance, which is what the relay needs"
+    }
+
+    # Sharing is fine, but it is worth knowing what it is being shared with.
+    $neighbours = Get-AzJson webapp list --query "[?serverFarmId=='$planId'].name"
+    if ($neighbours -and @($neighbours).Count -gt 0) {
+        Note "sharing this plan with: $(@($neighbours) -join ', ')"
+        Note "$($havePlan.sku.name) is one small VM between all of them."
     }
 }
 elseif ($PSCmdlet.ShouldProcess($plan, "create $Sku Linux plan")) {
     try {
-        Invoke-Az appservice plan create --name $plan --resource-group $ResourceGroup `
+        Invoke-Az appservice plan create --name $plan --resource-group $PlanResourceGroup `
             --location $Location --sku $Sku --is-linux --output none
         Ok "created"
     }
@@ -197,6 +239,7 @@ elseif ($PSCmdlet.ShouldProcess($plan, "create $Sku Linux plan")) {
         }
         throw
     }
+    $planId = (Get-AzJson appservice plan show --name $plan --resource-group $PlanResourceGroup).id
 }
 
 # --- Web app ---------------------------------------------------------------
@@ -205,9 +248,11 @@ if ($existing) {
     Ok "already there"
 }
 elseif ($PSCmdlet.ShouldProcess($Name, "create web app on DOTNETCORE|10.0")) {
-    Invoke-Az webapp create --name $Name --resource-group $ResourceGroup --plan $plan `
+    # By plan RESOURCE ID rather than name, so the plan may live in another
+    # resource group. The app inherits the plan's region either way.
+    Invoke-Az webapp create --name $Name --resource-group $ResourceGroup --plan $planId `
         --runtime "DOTNETCORE:10.0" --output none
-    Ok "created"
+    Ok "created in $Location on $plan"
 }
 
 # --- The settings that actually matter -------------------------------------
