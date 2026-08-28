@@ -229,20 +229,48 @@ mechanism. The alternative was a cross-organisation token, which goes wrong
 loudly rather than quietly, but has to be created, held and rotated by an
 account that is not the one running Azure.
 
-### One click, in the browser: permit the GameBase repository
+### The first run parks until the GameBase repository is authorized
 
-The first run of a pipeline that checks out a *second* repository parks on a
-**resource authorization checkpoint** and waits for a human. Open the run and
-choose **View** -> **Permit**; every queued run releases at once, and it is
-not asked again.
+A pipeline that checks out a *second* repository stops on a **resource
+authorization checkpoint** the first time it runs, and waits. This is the
+single most misleading state in the whole setup: the run sits at
+`notStarted` indefinitely and looks exactly like it is waiting for a build
+agent. The tell is in the run's timeline, which reads
+`Checkpoint.Authorization: inProgress`.
 
-It has to be the browser. `pipelinePermissions` is a preview-only API and
-`az devops invoke` refuses it at every api-version -- *"--resource and
---api-version combination is not correct"*. Nothing in the CLI grants this.
+In the browser it is one click -- open the run, **View** -> **Permit**. From
+the CLI:
 
-A run stuck here reports `Checkpoint.Authorization: inProgress` in its
-timeline and sits at `notStarted` indefinitely. It looks exactly like waiting
-for a build agent, which is the wrong thing to go and investigate.
+```powershell
+az devops invoke --org https://dev.azure.com/MorrisonHotel `
+  --area pipelinePermissions --resource pipelinePermissions `
+  --route-parameters project=Centipede resourceType=repository `
+    resourceId="<projectId>.<repositoryId>" `
+  --http-method PATCH --api-version "7.1-preview" --in-file perm.json
+```
+
+with `perm.json` holding `{"pipelines":[{"id":22,"authorized":true}]}`. It is
+asked once, and every queued run releases at the same moment.
+
+#### The api-version rule that makes `az devops invoke` usable
+
+This is worth its own heading, because two of the three obvious spellings
+fail and each fails differently:
+
+| `--api-version` | what happens |
+|---|---|
+| `7.1-preview.1` | CLI crash. It rewrites the string to `7.1.1` and calls `float()` on it |
+| `7.1` | *"The requested version of the resource is under preview. The -preview flag must be..."* |
+| `7.1-preview` | **works** |
+
+So: bare `-preview`, no trailing `.N`. Non-preview resources (the environments
+endpoint below) take a plain `7.1`. When a call fails, read which of those two
+errors you got -- they point in opposite directions.
+
+`az rest` is no use for any of this. The token from
+`az account get-access-token --resource 499b84ac-...` is refused by
+`dev.azure.com`, which answers with an HTML sign-in page under an HTTP **200**
+-- so the call fails as a *success*, with an empty body and no error.
 
 ### Validation is whole-pipeline, and it happens before any job
 
@@ -264,12 +292,9 @@ created too. `az` can do it, but only away from the paths that look obvious:
 az devops invoke --org https://dev.azure.com/MorrisonHotel --area distributedtask --resource environments --route-parameters project=Centipede --http-method POST --api-version 7.1 --in-file env.json
 ```
 
-Two things there are load-bearing. **The api-version must not be a preview
-one** -- `az devops invoke` parses `7.1-preview.1` into `7.1.1`, calls
-`float()` on it, and dies. And this cannot be done with `az rest`: the token
-from `az account get-access-token --resource 499b84ac-...` is refused by
-`dev.azure.com`, which answers with an HTML sign-in page and an HTTP 200, so
-it fails as a *success* with an empty body.
+This one takes a plain `7.1` rather than the `7.1-preview` the authorization
+call needs -- see the api-version table above, which is the difference between
+a working command and one of two unhelpful errors.
 
 ### What it still needs from you
 

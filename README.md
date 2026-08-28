@@ -97,6 +97,11 @@ and places them so those paths resolve untouched — the game at
 `Games/Centipede/TypeScript`, GameBase at `GameBase/GameBase`, both under one
 root. That layout was reproduced locally and every step passed.
 
+It is green: the two-repository checkout, the typecheck, the determinism and
+netcode proof (including the two-client co-op run) and both builds all pass on
+a hosted Linux agent, against GameBase at the exact commit the game is
+verified with.
+
 GameBase is developed in a different Azure DevOps organisation, which a
 build's own token cannot reach, so the pipeline reads a **mirror** of it
 alongside this repo. That needs refreshing by hand — one command, in
