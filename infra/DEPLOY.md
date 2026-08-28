@@ -92,6 +92,30 @@ If a region is blocked:
 ./infra/provision.ps1 -Location centralus -Deploy
 ```
 
+## Logging the run, and the trap that hides in it
+
+```powershell
+./infra/provision.ps1 -Deploy > provision.log 2>&1
+```
+
+That is safe now, and it was not always. Windows PowerShell wraps anything a
+native command writes to **stderr** in an ErrorRecord as soon as the output is
+captured, and with `$ErrorActionPreference = "Stop"` that record terminates the
+script. The Azure CLI writes ordinary progress notes to stderr — `az webapp
+create` signs off with *"Webapp created. Deploy your code with: az webapp
+deploy"* — so redirecting the run into a log file killed it on the strength of
+a **success** message, half way through provisioning, leaving a resource group
+and a bare web app with no settings and no code on them.
+
+`Invoke-Az` now drops to `Continue` around the call and gates on
+`$LASTEXITCODE`, which is the only honest success signal for a native command;
+`Get-AzJson` has always done the same for probes that are allowed to come back
+empty. Both are proven against a command that warns on stderr and exits 0, and
+against one that genuinely fails.
+
+The same trap is why `az` output should never be piped through `Select-String`
+to trim it — a filter captures, and capturing is the trigger.
+
 ## Where the client ends up
 
 Locally the server sits beside the client and reads `../dist` with no copy

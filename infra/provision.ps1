@@ -87,9 +87,20 @@ if (-not $script:AzExe) { throw "The Azure CLI is not installed. See https://aka
 # failed `az` prints its error and the script sails on announcing success.
 # That is worse than crashing: the first run of this script reported creating
 # a plan, a web app and six settings, none of which existed.
+# It also has to survive the stderr trap Get-AzJson documents below, from the
+# other side. With $ErrorActionPreference = "Stop", ANY stderr a native
+# command produces becomes a terminating ErrorRecord the moment the output is
+# captured -- and az writes ordinary progress notes there. `az webapp create`
+# signs off with "Webapp created. Deploy your code with: az webapp deploy",
+# so redirecting this script into a log file used to kill it half way through
+# provisioning, on the strength of a success message. The exit code is the
+# only honest signal, so gate on that and let the chatter through untouched.
 function Invoke-Az {
     param([Parameter(ValueFromRemainingArguments = $true)] [string[]] $Arguments)
-    & $script:AzExe @Arguments
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $script:AzExe @Arguments }
+    finally { $ErrorActionPreference = $previous }
     if ($LASTEXITCODE -ne 0) {
         throw "az $($Arguments -join ' ')`n  exited with code $LASTEXITCODE (see the error above)"
     }
