@@ -1143,12 +1143,16 @@ el<HTMLButtonElement>("btnEditor").addEventListener("click", () => {
 
 // --- Pointer wiring. -------------------------------------------------------
 
-/** Is the cursor physically over the playfield? Only the level editor cares:
- * it paints cells, so it must not paint from a cursor that is somewhere else
- * on the page. */
-function overCanvas(e: MouseEvent): boolean {
-  const r = canvas.getBoundingClientRect();
-  return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+/** Is the cursor over chrome that FLOATS ON the playfield? The editor and
+ * lobby panels are `position: absolute` inside the stage and a modal covers
+ * the lot, so "inside the canvas rectangle" is not the same question as "the
+ * player is pointing at the game" — ask what the cursor is actually over. */
+function overChrome(e: MouseEvent): boolean {
+  const node = e.target as Element | null;
+  return (
+    typeof node?.closest === "function" &&
+    node.closest("dialog[open], .panel:not(.hidden)") !== null
+  );
 }
 
 // Tracked on the WINDOW rather than the canvas.
@@ -1163,7 +1167,11 @@ function overCanvas(e: MouseEvent): boolean {
 // first pixel, with nothing banked up to unwind.
 window.addEventListener("mousemove", (e) => {
   if (editor.isOpen) {
-    if (!overCanvas(e)) {
+    // The editor paints cells, so it wants the canvas and nothing else — its
+    // own panel covers the right-hand third of the field it is painting. The
+    // target test is what the deleted `canvas.mouseleave` used to do, and it
+    // is right where a rectangle test is wrong.
+    if (e.target !== canvas) {
       editor.pointerLeave();
       return;
     }
@@ -1171,10 +1179,10 @@ window.addEventListener("mousemove", (e) => {
     editor.pointer(p.x, p.y, e.buttons);
     return;
   }
-  // A modal dialog is UI, not game input -- the same rule `keyboardIsBusy`
-  // already applies to keys. Without this, sweeping the cursor across the
-  // Settings dialog would drag the blaster along underneath it.
-  if (uiHasFocus()) return;
+  // Chrome is UI, not aim — the same rule `keyboardIsBusy` already applies to
+  // keys. Without this, sweeping across the lobby panel or the Settings dialog
+  // would drag the blaster along underneath it.
+  if (uiHasFocus() || overChrome(e)) return;
   if (pointerLocked) {
     // Captured: relative motion only. The canvas is a 1920x1080 world scaled
     // to fit, so CSS pixels of movement have to be divided by that scale to

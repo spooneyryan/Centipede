@@ -173,7 +173,16 @@ the edge of the playfield froze the blaster wherever it stood — it read as the
 game losing the mouse. Watching the window means the pointer keeps tracking
 wherever the cursor goes, and the clamp maps it to the nearest legal spot: run
 the cursor along under the playfield and the blaster still follows you left and
-right. A modal dialog is the one exception — that is UI, not game input.
+right.
+
+Chrome is the exception. The editor and lobby panels are absolutely positioned
+*inside* the stage, so they float over the right-hand third of the playfield
+and a cursor on one is geometrically “inside the canvas” while pointing at
+nothing of the sort. Panels and modals are asked about by hit target rather
+than by rectangle, and they suppress pointer input the way `keyboardIsBusy`
+already suppresses keys — otherwise scrolling the lobby would drag the blaster
+underneath it, and dragging in the editor's own panel would paint the columns
+it covers.
 
 **Pointer lock needs a real browser.** Embedded webviews often block it by
 Permissions Policy (Claude Code's preview pane does), and the game falls back
