@@ -9,6 +9,7 @@ so it picks up everything the framework offers:
 | **Internet co-op** | `@ccllc/coop` — lockstep + rollback, two blasters on one field, nothing on the wire but inputs. The C# relay (`CCLLC.Coop.Relay`) is hosted by `server/Program.cs` at `/ws/mp`. |
 | **Editable sprites** | Every drawable (mushroom, head, body, both blasters, bullet) can be redrawn in `@ccllc/studio`'s pixel/vector editor. Overrides persist on a library shelf; Reset returns the original procedural art. |
 | **Editable sounds** | Every effect is a `SfxDefinition` synth document (Atari-2600-to-NES era), editable in the sound designer, exportable as WAV/JSON. |
+| **Background music** | `platform/music` — three chiptune loops, assigned to levels in pairs and crossfaded. The module plays *files*; these are synthesised at boot and handed over as blob URLs, so the game still ships no audio assets. See below. |
 | **Level editor** | Paint a mushroom field, keep it on a shelf, download it, share it as a `#level=…` link, playtest it solo, or host it as a co-op match. Undo via `core/history`, shortcuts via `editor/keymap`. |
 | **Replays** | Deterministic ghosts: seed + inputs, a few KB. Save the last run (solo or co-op), watch it back, import/export as files. |
 | **Fullscreen** | `platform/presentation` — DOM fullscreen in a browser, the real window under the Electron wrapper, windowed size remembered in settings. |
@@ -170,6 +171,39 @@ All of it is tunable, and any of it can be switched off — setting a spawn
 interval or the coin chance to 0 turns that thing off entirely, so you can dial
 back to plain 1981 Centipede if you want it.
 
+
+## The music
+
+Three loops — a march, a faster chase, and a slow attract theme — live in
+[src/music.ts](src/music.ts) as note data for a small tracker: a wave, a decay,
+and a row of steps per part. They are rendered to WAV at boot with the sfx
+module's own encoder and handed to GameBase as blob URLs.
+
+That indirection is the point. `platform/music` plays **files**, which is right
+for a game with recorded music and wrong for this one: the sound effects are
+already synth documents rendered on the machine that plays them, and shipping
+megabytes of MP3 to a client that is 370 kB would be a strange trade. Three
+tracks cost **~40 ms** at startup and nothing on the wire.
+
+Levels are mapped to tracks **in pairs** — 1-2 march, 3-4 chase, 5-6 march —
+so `playFor(level)` at each level start crossfades on every other level and is
+a no-op in between. A level retried after a death does not restart the music,
+which is the behaviour that mapping buys you.
+
+Two things the first render got wrong, both caught by decoding the buffers back
+and measuring them rather than by listening:
+
+- **The loop clicked.** The last sample met the first 0.5 of full scale away,
+  every few seconds, forever. Four milliseconds of fade at each end pins both
+  ends to zero — the seam now measures 0.
+- **A third of the march was silence.** A rest cut off the note still ringing,
+  because a decay longer than a step was being gated at the step boundary. A
+  rest now lets the note ring; the track went from 69% audible to 100%.
+
+Music is presentation, always. The state-to-track mapping is read in the render
+path and is unreachable from `step()` — co-op rewinds several ticks a second,
+and music that reacted inside the simulation would stutter on every one.
+
 ## The mouse
 
 Clicking the playfield **captures the mouse**: the cursor disappears and the
@@ -261,6 +295,7 @@ src/
   render.ts      pixel-perfect port of the original canvas drawing,
                  plus skin colours, sprite overrides, glow toggle
   sounds.ts      the editable synth-document soundtrack
+  music.ts       three chiptune loops, synthesised to WAV and played per level
   sprites.ts     the editable sprite overrides
   levels.ts      the level document format + shelf
   tuning.ts      the 14 tunables, their ranges, and the sanitizer

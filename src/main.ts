@@ -46,6 +46,7 @@ import { CELL, HEIGHT, WIDTH } from "./config";
 import type { MushroomField } from "./mushrooms";
 import { confineToBox } from "./entities";
 import { blockedAt, slideThroughField } from "./collide";
+import { MUSIC_TRACKS, createGameMusic } from "./music";
 import { createLevelEditor } from "./editor";
 import { createLevelStore, type LevelDoc } from "./levels";
 import { Renderer, SPRITE_SLOTS, type OverlayText } from "./render";
@@ -137,6 +138,8 @@ const RETUNED_IN_V2: ReadonlyArray<[`tune_${keyof Tuning}`, number]> = [
 const settings = defineSettings<{
   soundOn: boolean;
   sfxVolume: number;
+  musicOn: boolean;
+  musicVolume: number;
   mouseControl: boolean;
   showGrid: boolean;
   glowEffects: boolean;
@@ -160,6 +163,8 @@ const settings = defineSettings<{
   fields: {
     soundOn: { type: "boolean", default: true },
     sfxVolume: { type: "number", min: 0, max: 100, step: 5, default: 80 },
+    musicOn: { type: "boolean", default: true },
+    musicVolume: { type: "number", min: 0, max: 100, step: 5, default: 55 },
     mouseControl: { type: "boolean", default: true },
     showGrid: { type: "boolean", default: true },
     glowEffects: { type: "boolean", default: true },
@@ -306,12 +311,28 @@ const renderer = new Renderer(display.context);
 const soundBank = createSoundBank({ report });
 const spriteBank = createSpriteBank({ report });
 
+// The tunes are synthesised here and handed over as blob URLs -- see music.ts
+// for why a module that plays files is being fed something this game generated.
+const musicBank = createGameMusic({
+  report,
+  enabled: settings.get("musicOn"),
+  masterGain: settings.get("musicVolume") / 100,
+});
+report("music.ready", { renderMs: musicBank.renderMs, tracks: Object.keys(MUSIC_TRACKS).length });
+
 function applyAudioSettings(): void {
   soundBank.player.enabled = settings.get("soundOn");
   soundBank.player.setMasterGain(0.8 * (settings.get("sfxVolume") / 100));
+  // `enabled = false` pauses in place and remembers what was asked for, so
+  // switching music back on resumes the piece the game last wanted rather
+  // than starting whatever was playing when it went quiet.
+  musicBank.music.enabled = settings.get("musicOn");
+  musicBank.music.setMasterGain(settings.get("musicVolume") / 100);
 }
 settings.subscribe((_, changed) => {
-  if (changed.includes("soundOn") || changed.includes("sfxVolume")) applyAudioSettings();
+  if (changed.some((n) => n === "soundOn" || n === "sfxVolume" || n === "musicOn" || n === "musicVolume")) {
+    applyAudioSettings();
+  }
 });
 applyAudioSettings();
 
@@ -1354,6 +1375,34 @@ function overlayFor(): OverlayText {
   };
 }
 
+/** Sim state out, one track name in.
+ *
+ * Called from the RENDER path and nowhere else. `step()` cannot reach it, so a
+ * rolled-back tick can never restart a piece -- which is the failure this
+ * would otherwise have: co-op rewinds several ticks a second, and music that
+ * reacted inside the simulation would stutter on every one of them.
+ *
+ * A death and a level clear are deliberately absent below: they leave the key
+ * unchanged, so the level's track plays on through losing a blaster rather
+ * than cutting out and restarting. */
+let musicKey = "";
+function updateMusic(): void {
+  const g = currentGame();
+  const key =
+    editor.isOpen || g.state === STATE_ATTRACT ? "attract"
+    : g.state === STATE_GAME_OVER ? "over"
+    : g.state === STATE_PLAYING ? `level:${g.level}`
+    : musicKey;
+  if (key === musicKey) return;
+  musicKey = key;
+
+  if (key === "attract") void musicBank.music.play("attract");
+  else if (key === "over") musicBank.music.stop({ fadeSeconds: 1.5 });
+  // Levels are mapped in pairs, so this is a no-op on half of them and a
+  // crossfade on the other half -- and a retried level never restarts it.
+  else void musicBank.music.playFor(g.level);
+}
+
 const loop = createLoop({
   fixedStep: null, // the co-op session or the solo accumulator owns sim time
   update: (dt) => {
@@ -1414,6 +1463,7 @@ const loop = createLoop({
   render: (dt) => {
     clock += dt;
     perf.frame(performance.now());
+    updateMusic();
 
     display.clear("#000");
     if (editor.isOpen) {
@@ -1478,7 +1528,13 @@ let pausedByHide = false;
 
 const lifecycle = createLifecycle({
   input,
-  audio: soundBank.player,
+  // Two audio graphs, one unlock. Lifecycle only ever calls `resume`, so an
+  // adapter is enough and neither module needs to know about the other.
+  audio: {
+    resume: async () => {
+      await Promise.all([soundBank.player.resume(), musicBank.music.resume()]);
+    },
+  },
   loop,
   onPause: () => {
     if (coop.running && !coop.paused) {
@@ -1506,6 +1562,9 @@ const lifecycle = createLifecycle({
   coop,
   loop,
   display,
+  music: musicBank.music,
+  musicRenderMs: musicBank.renderMs,
+  musicUrls: musicBank.urls,
   settings,
   lifecycle,
   perf,
