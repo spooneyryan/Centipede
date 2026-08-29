@@ -19,7 +19,7 @@ so it picks up everything the framework offers:
 | **Skins** | The page chrome wears the skin contract's `--game-*` tokens. The canvas defaults to the original palette (pixel-perfect); pick a built-in skin, derive one from a hue, or import a skin file. |
 | **Controller** | `platform/input` — keyboard and gamepad behind one action map (d-pad/left stick move, A/RT fire, Start starts, button 8 pauses, Y restarts). |
 | **Telemetry** | `createTelemetry` — off by default, nothing identifying; every GameBase module reports into it (`loop.overrun`, `document.rejected`, …). Needs an endpoint configured in Settings. |
-| **FPS counter** | `Show FPS` in Settings. It reads the same samples `core/perf` already collects to decide when to shed the glow, and reports the **render** rate — the simulation is 60 Hz and fixed. |
+| **FPS counter** | **F** toggles it, or `Show FPS` in Settings. It reads the same samples `core/perf` already collects to decide when to shed the glow, and reports the **render** rate — the simulation is 60 Hz and fixed. It sits in the status line under the playfield, not on it: the HUD owns the whole top row (score left, high score centre, level right), so there is no free corner to overlay. |
 | **Perf scaling** | `core/perf` — when a machine falls below its own baseline frame rate, the glow effects shed automatically. |
 
 ## Run it

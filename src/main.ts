@@ -1347,6 +1347,18 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
+  // F: the frame-rate readout. Not a game action, so it works anywhere the
+  // keyboard is not busy -- during play, on the title screen, in the editor --
+  // and it writes through the settings store so the checkbox in Settings and
+  // the next session both agree with what F just did.
+  if (e.code === "KeyF") {
+    settings.set("showFps", !settings.get("showFps"));
+    if (settingsDialog.open) populateSettingsForm();
+    updateFps();
+    e.preventDefault();
+    return;
+  }
+
   // P: pause, and the mouse follows the pause. Handled here rather than
   // through the action map because resuming re-grabs the mouse, which needs a
   // real user gesture.
@@ -1519,7 +1531,7 @@ function updateFps(): void {
   // Four times a second. The number is a rolling median already, and a value
   // that changes every frame is unreadable.
   const now = performance.now();
-  if (now - fpsShownAt < 250) return;
+  if (now - fpsShownAt < 250 && fpsReadout.textContent !== "") return;
   fpsShownAt = now;
 
   const { current, min } = perf.stats;
