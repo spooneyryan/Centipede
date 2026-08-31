@@ -83,6 +83,7 @@ import {
   type Tuning,
 } from "./tuning";
 import { drawSpriteAsset } from "@ccllc/studio/render";
+import type { SpriteAsset } from "@ccllc/arcade/shmup";
 
 const GAME_VERSION = "1.0.0";
 // PAIRING TOKEN. Two clients play together only if these match exactly, so it
@@ -815,15 +816,31 @@ function renderSpriteRows(): void {
     state.className = "asset-state";
     state.textContent = override ? "custom" : "original";
 
+    // Two ways in, because they open different editors and a person knows
+    // which they want before they click. `Edit` continues whatever the slot
+    // already holds; `Image` starts (or continues) a full-resolution one,
+    // which is also the door to importing a png, jpg or gif -- the image
+    // editor has that button, so this one does not need its own.
+    const openSlot = (asset: SpriteAsset) => {
+      spritesDialog.close();
+      studio.editSprite(asset, (saved) => {
+        spriteBank.set(slot, saved);
+        telemetry?.event("sprite.edited", { slot, kind: saved.kind });
+      });
+    };
+
     const edit = document.createElement("button");
     edit.type = "button";
     edit.textContent = "Edit";
-    edit.addEventListener("click", () => {
-      spritesDialog.close();
-      studio.editSprite(spriteBank.get(slot) ?? spriteBank.blank(slot), (asset) => {
-        spriteBank.set(slot, asset);
-        telemetry?.event("sprite.edited", { slot });
-      });
+    edit.addEventListener("click", () => openSlot(spriteBank.get(slot) ?? spriteBank.blank(slot)));
+
+    const image = document.createElement("button");
+    image.type = "button";
+    image.textContent = "Image";
+    image.title = "Paint or import a full-resolution picture for this sprite";
+    image.addEventListener("click", () => {
+      const held = spriteBank.get(slot);
+      openSlot(held?.kind === "image" ? held : spriteBank.blank(slot, "image"));
     });
 
     const reset = document.createElement("button");
@@ -835,7 +852,7 @@ function renderSpriteRows(): void {
       renderSpriteRows();
     });
 
-    row.append(preview, label, state, edit, reset);
+    row.append(preview, label, state, edit, image, reset);
     spriteRows.append(row);
   }
 }

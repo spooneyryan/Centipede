@@ -3,12 +3,17 @@
 // the studio's .tsx files out of this project's typecheck program, where our
 // stricter compiler settings — and the upstream SFX_FIELD_LIST bug that our
 // Vite plugin patches — would fail the build. Shapes match
-// packages/studio/src/{types.ts,SfxStudio.tsx,render.ts} at v1.3.6.
+// packages/studio/src/{types.ts,SfxStudio.tsx,image.ts,render.ts} at v2.0.9.
+//
+// The cost of the shim, paid here rather than discovered: it is a copy, so
+// it goes stale silently. `blankImageAsset` and the `image` sprite kind
+// existed upstream and did not exist here, and the symptom was a member
+// this file had never heard of rather than anything pointing at this file.
 
 declare module "@ccllc/studio" {
   import type { ReactElement } from "react";
   import type { SfxDefinition } from "@ccllc/arcade/sfx";
-  import type { SpriteAsset } from "@ccllc/arcade/shmup";
+  import type { ImageSpriteAsset, SpriteAsset } from "@ccllc/arcade/shmup";
 
   export interface StudioProps {
     asset: SpriteAsset;
@@ -32,6 +37,18 @@ declare module "@ccllc/studio" {
   }): ReactElement | null;
 
   export const makeId: () => string;
+
+  /**
+   * A new, empty full-resolution image asset. An image asset is defined by
+   * carrying real bytes, so this returns one holding a transparent PNG —
+   * an asset with an empty `data` is dropped by normalizeAssets.
+   */
+  export function blankImageAsset(
+    id: string,
+    name?: string,
+    width?: number,
+    height?: number,
+  ): ImageSpriteAsset;
 }
 
 declare module "@ccllc/studio/render" {
@@ -62,8 +79,9 @@ declare module "@ccllc/studio/render" {
     createCanvas?: () => HTMLCanvasElement,
   ): HTMLCanvasElement;
 
-  /** Draw either kind of asset centred on the current origin, fitted inside a
-   * square of `extent` units on its longest side. */
+  /** Draw ANY kind of asset — pixel grid, image or vector — centred on the
+   * current origin, fitted inside a square of `extent` units on its longest
+   * side. An `image` draws nothing until its data URL has decoded. */
   export function drawSpriteAsset(
     context: CanvasRenderingContext2D,
     asset: SpriteAsset,

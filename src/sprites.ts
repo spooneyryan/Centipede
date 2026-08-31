@@ -1,12 +1,20 @@
 // Editable sprites: every drawable in the game can be replaced by a
-// user-drawn SpriteAsset document (raster pixel art or vector shapes),
-// authored in the studio's SpriteStudio and persisted in a document library.
-// The renderer falls back to the original procedural drawing for any slot
-// without an override, which is what keeps the default look pixel-perfect.
+// user-drawn SpriteAsset document -- raster pixel art, vector shapes, or a
+// full-resolution image -- authored in the studio's SpriteStudio and
+// persisted in a document library. The renderer falls back to the original
+// procedural drawing for any slot without an override, which is what keeps
+// the default look pixel-perfect.
+//
+// The image kind arrived with GameBase 2.0.9 and cost this file almost
+// nothing: SpriteStudio dispatches on `kind`, normalizeAssets validates all
+// three, and drawSpriteAsset draws all three. The only thing a host has to
+// supply is a blank one to start from, and an image asset is defined by
+// carrying real bytes -- so that is blankImageAsset rather than a literal.
 
 import { defineFormat, type DocumentFormat, type ReportSink } from "@ccllc/arcade/core";
 import { defineLibrary, type Library } from "@ccllc/arcade/core";
 import { normalizeAssets, type SpriteAsset } from "@ccllc/arcade/shmup";
+import { blankImageAsset } from "@ccllc/studio";
 import type { SpriteSlot } from "./render";
 import { SPRITE_SLOTS } from "./render";
 
@@ -40,8 +48,12 @@ export interface SpriteBank {
   overrides(): Partial<Record<SpriteSlot, SpriteAsset>>;
   set(slot: SpriteSlot, asset: SpriteAsset): void;
   reset(slot: SpriteSlot): void;
-  /** A fresh 16x16 raster canvas to start drawing a slot from. */
-  blank(slot: SpriteSlot): SpriteAsset;
+  /**
+   * A fresh canvas to start a slot from: a 16x16 pixel grid, or a
+   * 128-square transparent image for somebody who would rather paint at
+   * full resolution or drop a png in.
+   */
+  blank(slot: SpriteSlot, kind?: "raster" | "image"): SpriteAsset;
 }
 
 export function createSpriteBank(options: { report?: ReportSink } = {}): SpriteBank {
@@ -102,13 +114,17 @@ export function createSpriteBank(options: { report?: ReportSink } = {}): SpriteB
       if (entry) library.remove(entry.id);
       rebuild();
     },
-    blank: (slot) => ({
-      id: `sprite-${slot}-${Date.now().toString(36)}`,
-      name: SPRITE_SLOT_LABELS[slot],
-      kind: "raster",
-      width: 16,
-      height: 16,
-      pixels: Array(256).fill(""),
-    }),
+    blank: (slot, kind = "raster") => {
+      const id = `sprite-${slot}-${Date.now().toString(36)}`;
+      if (kind === "image") return blankImageAsset(id, SPRITE_SLOT_LABELS[slot], 128, 128);
+      return {
+        id,
+        name: SPRITE_SLOT_LABELS[slot],
+        kind: "raster",
+        width: 16,
+        height: 16,
+        pixels: Array(256).fill(""),
+      };
+    },
   };
 }
