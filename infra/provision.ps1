@@ -412,9 +412,49 @@ if ($Deploy) {
             # and fail: it expects sources, not a publish output.
             Invoke-Az webapp config appsettings set --name $Name --resource-group $ResourceGroup `
                 --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false --output none
+            # --track-status false, and then check for ourselves.
+            #
+            # The CLI's own startup tracking calls a slow cold start a failed
+            # one. It did exactly that here: it polled for 876 seconds and
+            # reported "Site failed to start", while the container log for the
+            # same deployment read "Site startup probe succeeded after 144.98
+            # seconds" and then "Site started". The site was serving 200 the
+            # whole time the CLI was declaring it dead.
+            #
+            # A false failure is worse than no check. It sends you looking for
+            # a crash that never happened, and it fails the script -- which on
+            # a pipeline would fail the build over a healthy deploy. So turn
+            # the unreliable tracker off and ask the site itself, which is the
+            # question that was being approximated anyway.
             Invoke-Az webapp deploy --name $Name --resource-group $ResourceGroup `
-                --src-path $zip --type zip --restart true --output none
-            Ok "deployed"
+                --src-path $zip --type zip --restart true --track-status false --output none
+            Ok "uploaded"
+
+            Note "waiting for the site to answer (a cold start on a shared plan takes a while)"
+            $url = "https://$Name.azurewebsites.net"
+            $site = 0
+            foreach ($attempt in 1..60) {
+                try {
+                    $site = [int] (Invoke-WebRequest -Uri "$url/" -UseBasicParsing -TimeoutSec 20).StatusCode
+                }
+                catch { $site = 0 }
+                if ($site -eq 200) { break }
+                Start-Sleep -Seconds 10
+            }
+            if ($site -ne 200) { throw "The site did not answer 200 within ten minutes (last was $site)." }
+            Ok "site is up"
+
+            # 200 proves the static half. The relay is the half that breaks
+            # silently -- WebSockets are off by default, and when they are off
+            # nothing appears in the log because the request never reaches the
+            # app. A plain GET to the socket path must be REFUSED with 400.
+            $relay = 0
+            try { $relay = [int] (Invoke-WebRequest -Uri "$url/ws/mp" -UseBasicParsing -TimeoutSec 20).StatusCode }
+            catch { $relay = [int] $_.Exception.Response.StatusCode }
+            if ($relay -ne 400) {
+                throw "The relay answered $relay at /ws/mp; 400 is expected -- it means the endpoint exists and refused a non-WebSocket request. 404 means the app is not routing it."
+            }
+            Ok "relay is up (400 at /ws/mp, which is the refusal that proves it)"
         }
     }
     finally { Pop-Location }

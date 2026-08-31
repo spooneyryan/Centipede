@@ -71,6 +71,35 @@ through a cold start, which drops any WebSocket mid-handshake. F1 does not
 have it, which is why B1 is the floor for something you would actually invite
 someone to play on.
 
+## The CLI calls a slow start a failed one
+
+`az webapp deploy` tracks the site's startup and reports on it, and on a cold
+start it gets the answer wrong. Measured here, on one deploy:
+
+| source | verdict |
+|---|---|
+| `az webapp deploy` | polled 876s, then **"Site failed to start"**, exit 1 |
+| the container log | `Site startup probe succeeded after 144.98 seconds` / `Site started.` |
+| the site itself | **200**, ten times over thirty seconds |
+| `/ws/mp` | 400 — the relay was up too |
+
+The site had been serving for six minutes by the time the CLI declared it
+dead. A false failure is worse than no check at all: it sends you hunting a
+crash that never happened, and it fails the script -- which in a pipeline
+fails the build over a healthy deploy.
+
+So the deploy passes `--track-status false` and this script asks the site
+itself instead: poll `/` until it answers 200 (up to ten minutes, because a
+cold start on a plan shared with six other apps genuinely is slow), then
+require **400** from `/ws/mp`. That second one is the half that breaks
+quietly -- WebSockets are off by default on App Service, and when they are off
+nothing appears in the log because the request never reaches the app. 400
+means the endpoint exists and refused a non-WebSocket request; 404 means the
+app is not routing it.
+
+It is the same probe `azure-pipelines.yml` runs after its deploy, which is not
+a coincidence -- it is the question `--track-status` was approximating.
+
 ## The wrong account is worse than no account
 
 `az` picks a default subscription, and it re-picks silently the moment a new
