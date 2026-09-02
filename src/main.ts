@@ -563,9 +563,11 @@ const smoothScratch = { x: 0, y: 0, angle: 0 };
 const smoothOut: [number, number] = [0, 0];
 function smoothPose(key: unknown, x: number, y: number): readonly [number, number] {
   // The local blaster answers the hand directly — a tick of added latency is
-  // a worse trade than cursor-rate motion — so in solo it draws raw. A
-  // replay has no live hand; its players are recorded input and smoothing
-  // them is pure gain.
+  // a worse trade than cursor-rate motion — so it draws raw: every solo slot
+  // (they are all this machine's hands), and in co-op the seat this machine
+  // holds. A replay has no live hand; its players are recorded input and
+  // smoothing them is pure gain. The peer's blaster smooths too — it is a
+  // prediction, not a hand.
   if (mode === "solo") {
     for (const slot of game.slots) {
       if (slot.player === key) {
@@ -573,6 +575,13 @@ function smoothPose(key: unknown, x: number, y: number): readonly [number, numbe
         smoothOut[1] = y;
         return smoothOut;
       }
+    }
+  } else if (mode === "coop") {
+    const local = game.slots[coop.seat];
+    if (local && local.player === key) {
+      smoothOut[0] = x;
+      smoothOut[1] = y;
+      return smoothOut;
     }
   }
   const pose = motion.at(key, renderAlpha, smoothScratch);
@@ -681,10 +690,13 @@ const coop = createCoop<Input>({
     isFinished: () => game.over,
     // Nothing but simulation in here — step is re-run during rollback
     // replays, so side effects (telemetry, the high-score write) live in the
-    // frame loop, where the state has settled.
+    // frame loop, where the state has settled. The pose capture is the one
+    // deliberate exception: re-running it during a replay is exactly what
+    // keeps it honest, because the buffer ends holding the corrected poses.
     step: (inputs) => {
       if (recorderGame === game) recorder?.capture(game.tick, inputs);
       game.step(inputs);
+      capturePoses(game);
     },
     start: (ctx) => {
       const payload = (ctx.payload ?? {}) as Partial<CoopPayload>;
@@ -698,6 +710,7 @@ const coop = createCoop<Input>({
         tuning: matchTuning,
       });
       game.start();
+      motion.clear(); // the match's entities are a new world's objects
       mode = "coop";
       recorder = new ReplayRecorder(
         ctx.seed | 0,
@@ -1657,13 +1670,15 @@ const loop = createLoop({
 
     if (mode === "coop" && coop.running) {
       accumulator = 0;
-      // The session owns the clock here and exposes no fractional-tick
-      // progress, so co-op draws at simulation cadence until @ccllc/coop
-      // grows an alpha of its own.
-      smoothing = false;
       const workStart = performance.now();
       coop.pump(workStart);
       updateWorkMs += performance.now() - workStart;
+      // The session owns the clock here — and tells us where in the tick it
+      // is, so a match draws at display rate exactly like solo. Pose capture
+      // rides the step hook, which rollback re-runs; the buffer therefore
+      // always holds the corrected poses.
+      renderAlpha = coop.alpha;
+      smoothing = true;
       finishRunIfOver(game);
       return;
     }
