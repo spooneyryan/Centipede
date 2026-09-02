@@ -81,6 +81,12 @@ export interface RenderOptions {
   /** Which seat this machine is, marking "your" blaster in co-op. -1 outside
    * co-op, where "which one is mine" has no meaning. */
   localSeat: number;
+  /** Where to draw a moving thing, given where the simulation has it. The
+   * host supplies this to interpolate 60 Hz poses up to the display's rate;
+   * absent, everything draws exactly at the simulation's pose. The renderer
+   * passes the entity object as the key and stays out of policy — what
+   * smooths and what stays raw belongs to the caller. */
+  smooth?: (key: unknown, x: number, y: number) => readonly [number, number];
 }
 
 const SEAT_COLORS = ["#4fd6ff", "#ffd447"] as const;
@@ -105,30 +111,46 @@ export class Renderer {
     for (const train of game.trains) {
       for (let i = 0; i < train.segments.length; i++) {
         const seg = train.segments[i];
-        const [x, y] = seg.position(train.t);
+        let [x, y] = seg.position(train.t);
+        if (o.smooth) [x, y] = o.smooth(seg, x, y);
         this.drawSegment(x, y, CELL, i === 0, seg.dirX, i, o);
       }
     }
 
     for (const enemy of game.enemies) {
-      this.drawEnemy(enemy.kind, enemy.x, enemy.y, enemy.vx, o);
+      let ex = enemy.x;
+      let ey = enemy.y;
+      if (o.smooth) [ex, ey] = o.smooth(enemy, ex, ey);
+      this.drawEnemy(enemy.kind, ex, ey, enemy.vx, o);
     }
 
     for (const m of game.falling) {
-      this.drawMushroom(m.x, m.y, CELL, 4, o, SPECIAL_FALLING);
+      let mx = m.x;
+      let my = m.y;
+      if (o.smooth) [mx, my] = o.smooth(m, mx, my);
+      this.drawMushroom(mx, my, CELL, 4, o, SPECIAL_FALLING);
     }
 
     for (const coin of game.coins) {
-      this.drawCoin(coin.kind, coin.x, coin.y, coin.life, o);
+      let cx = coin.x;
+      let cy = coin.y;
+      if (o.smooth) [cx, cy] = o.smooth(coin, cx, cy);
+      this.drawCoin(coin.kind, cx, cy, coin.life, o);
     }
 
     for (const bullet of game.bullets) {
-      this.drawBullet(bullet.x, bullet.y, BULLET_LEN, o);
+      let bx = bullet.x;
+      let by = bullet.y;
+      if (o.smooth) [bx, by] = o.smooth(bullet, bx, by);
+      this.drawBullet(bx, by, BULLET_LEN, o);
     }
 
     if (game.state === STATE_PLAYING) {
       for (let i = 0; i < game.slots.length; i++) {
         const slot = game.slots[i];
+        let px = slot.player.x;
+        let py = slot.player.y;
+        if (o.smooth) [px, py] = o.smooth(slot.player, px, py);
         if (slot.powers.shield > 0) {
           const ctx = this.ctx;
           ctx.save();
@@ -138,11 +160,11 @@ export class Renderer {
           ctx.strokeStyle = "#7fe9ff";
           ctx.lineWidth = Math.max(2, PLAYER_SIZE * 0.1);
           ctx.beginPath();
-          ctx.arc(slot.player.x, slot.player.y, PLAYER_SIZE * 0.85, 0, Math.PI * 2);
+          ctx.arc(px, py, PLAYER_SIZE * 0.85, 0, Math.PI * 2);
           ctx.stroke();
           ctx.restore();
         }
-        this.drawPlayer(slot.player.x, slot.player.y, PLAYER_SIZE, i, o, i === o.localSeat);
+        this.drawPlayer(px, py, PLAYER_SIZE, i, o, i === o.localSeat);
       }
       this.drawPowers(game, o);
     }

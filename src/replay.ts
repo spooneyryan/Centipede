@@ -155,7 +155,13 @@ export class ReplayPlayer {
     return this.tick >= this.doc.ticks || this.game.over;
   }
 
-  advance(dt: number): void {
+  /** Fraction of the next tick already accumulated — the renderer's lerp t,
+   * so a replay draws as smoothly as the run it re-simulates. */
+  get alpha(): number {
+    return this.accumulator / DT;
+  }
+
+  advance(dt: number, afterTick?: (game: Game) => void): void {
     if (this.finished) return;
     this.accumulator += Math.min(dt, 0.25);
     while (this.accumulator >= DT && !this.finished) {
@@ -166,6 +172,9 @@ export class ReplayPlayer {
       }
       this.game.step(this.doc.players === 2 ? this.current : [this.current[0]]);
       this.tick += 1;
+      // The pose-capture seam: rendering wants to remember where everything
+      // was on each tick, and only this loop knows when a tick happened.
+      afterTick?.(this.game);
     }
   }
 }

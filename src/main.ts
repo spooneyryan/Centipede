@@ -18,11 +18,13 @@
 
 import {
   createLoop,
+  createPacingMonitor,
   createPerformanceMonitor,
   defineLibrary,
   resolveStorage,
   defineSettings,
 } from "@ccllc/arcade/core";
+import { createMotionInterpolator } from "@ccllc/arcade/render";
 import {
   createDisplay,
   createInput,
@@ -529,6 +531,64 @@ perf.onQualityChange((event) => {
   perfDegraded = event.degraded;
 });
 
+// --- Interpolated presentation. ---------------------------------------------
+// The simulation steps at 60 Hz; the display may run 120 or faster. Drawn
+// directly, every pose is held for two frames, then three when scheduler
+// jitter walks the step boundary — the judder this game was always felt to
+// have. The cure is remembering where everything WAS one tick ago and drawing
+// each thing `renderAlpha` of the way toward where it IS. Pure presentation:
+// the simulation never reads any of this, so replays and co-op fingerprints
+// are untouched. Anything jumping two cells in one tick is a respawn, not
+// motion — it snaps.
+const motion = createMotionInterpolator({ snapDistance: CELL * 2 });
+let renderAlpha = 0; // fraction of the next tick already accumulated
+let smoothing = false; // only in the modes whose clock we can see into
+
+function capturePoses(g: Game): void {
+  motion.begin();
+  for (const train of g.trains) {
+    for (const seg of train.segments) {
+      const [x, y] = seg.position(train.t);
+      motion.put(seg, x, y);
+    }
+  }
+  for (const enemy of g.enemies) motion.put(enemy, enemy.x, enemy.y);
+  for (const m of g.falling) motion.put(m, m.x, m.y);
+  for (const coin of g.coins) motion.put(coin, coin.x, coin.y);
+  for (const bullet of g.bullets) motion.put(bullet, bullet.x, bullet.y);
+  for (const slot of g.slots) motion.put(slot.player, slot.player.x, slot.player.y);
+}
+
+const smoothScratch = { x: 0, y: 0, angle: 0 };
+const smoothOut: [number, number] = [0, 0];
+function smoothPose(key: unknown, x: number, y: number): readonly [number, number] {
+  // The local blaster answers the hand directly — a tick of added latency is
+  // a worse trade than cursor-rate motion — so in solo it draws raw. A
+  // replay has no live hand; its players are recorded input and smoothing
+  // them is pure gain.
+  if (mode === "solo") {
+    for (const slot of game.slots) {
+      if (slot.player === key) {
+        smoothOut[0] = x;
+        smoothOut[1] = y;
+        return smoothOut;
+      }
+    }
+  }
+  const pose = motion.at(key, renderAlpha, smoothScratch);
+  smoothOut[0] = pose === null ? x : pose.x;
+  smoothOut[1] = pose === null ? y : pose.y;
+  return smoothOut;
+}
+
+// The pacing monitor turns "it hiccups here and there" into numbers: the
+// frame-delta tail and a log of broken-cadence frames, each labelled "work"
+// (this game's own update-and-draw) or "external" (the browser, the OS).
+// Read it from the FPS readout; it decides nothing.
+const pacing = createPacingMonitor();
+let updateWorkMs = 0;
+let lastWorkMs = 0;
+
 function currentGame(): Game {
   return mode === "replay" && replayer ? replayer.game : game;
 }
@@ -546,6 +606,7 @@ function localInput(): Input {
 
 function startSoloRun(layout: LevelDoc | null): void {
   pendingLayout = layout;
+  motion.clear(); // a new run must not inherit the old one's motion
   const seed = (Math.random() * 0x7fffffff) | 0; // minted once, outside the sim
   const tuning = settingsTuning(); // read once, here, and frozen into the run
   game = new Game(seed, {
@@ -935,6 +996,7 @@ function watchReplay(doc: ReplayDoc): void {
   }
   replayNote.textContent = "";
   replaysDialog.close();
+  motion.clear(); // the replay's entities are a different world's objects
   replayer = new ReplayPlayer(doc);
   mode = "replay";
   soundBank.resync(replayer.game);
@@ -1554,7 +1616,16 @@ function updateFps(): void {
   const { current, min } = perf.stats;
   if (current === null) { fpsReadout.textContent = "-- fps"; return; }
   const low = min === null ? "" : `  (low ${Math.round(min)})`;
-  fpsReadout.textContent = `${Math.round(current)} fps${low}${perfDegraded ? "  glow off" : ""}`;
+  // The pacing tail is the part the average cannot show: the p99 frame and
+  // how many frames broke cadence, with the worst offender's cause.
+  const p = pacing.stats;
+  const worst = pacing.hiccups().at(-1);
+  const tail =
+    p.p99Ms === null
+      ? ""
+      : `  ·  p99 ${p.p99Ms.toFixed(1)}ms · ${p.hiccupCount} hiccup${p.hiccupCount === 1 ? "" : "s"}` +
+        (worst ? ` (last: ${worst.ms.toFixed(0)}ms ${worst.cause})` : "");
+  fpsReadout.textContent = `${Math.round(current)} fps${low}${tail}${perfDegraded ? "  glow off" : ""}`;
 }
 
 const loop = createLoop({
@@ -1586,12 +1657,24 @@ const loop = createLoop({
 
     if (mode === "coop" && coop.running) {
       accumulator = 0;
-      coop.pump(performance.now());
+      // The session owns the clock here and exposes no fractional-tick
+      // progress, so co-op draws at simulation cadence until @ccllc/coop
+      // grows an alpha of its own.
+      smoothing = false;
+      const workStart = performance.now();
+      coop.pump(workStart);
+      updateWorkMs += performance.now() - workStart;
       finishRunIfOver(game);
       return;
     }
     if (mode === "replay" && replayer) {
-      if (!isPaused()) replayer.advance(dt);
+      if (!isPaused()) {
+        const workStart = performance.now();
+        replayer.advance(dt, capturePoses);
+        updateWorkMs += performance.now() - workStart;
+        renderAlpha = replayer.alpha;
+        smoothing = true;
+      }
       return;
     }
     if (editor.isOpen || soloPaused) {
@@ -1599,6 +1682,7 @@ const loop = createLoop({
       return;
     }
     // Solo: the classic fixed-timestep accumulator.
+    const workStart = performance.now();
     accumulator += dt;
     let guard = 0;
     while (accumulator >= DT && guard < 8) {
@@ -1608,15 +1692,23 @@ const loop = createLoop({
       // is not part of the run and must not inflate its length.
       if (recorderGame === game && !game.over) recorder?.capture(game.tick, inputs);
       game.step(inputs);
+      capturePoses(game);
       finishRunIfOver(game);
       accumulator -= DT;
       guard += 1;
     }
     if (guard === 8) accumulator = 0; // discard what cannot be simulated
+    updateWorkMs += performance.now() - workStart;
+    renderAlpha = accumulator / DT;
+    smoothing = true;
   },
-  render: (dt) => {
+  render: (dt, _alpha, loopContext) => {
+    // Fed the loop's own scheduler timestamp plus how long the previous
+    // frame's update-and-draw took, so a logged hiccup can name its cause.
+    pacing.frame(loopContext.timestamp, lastWorkMs);
+    const drawStart = performance.now();
     clock += dt;
-    perf.frame(performance.now());
+    perf.frame(drawStart);
     updateMusic();
     updateFps();
 
@@ -1643,6 +1735,7 @@ const loop = createLoop({
         paused: isPaused(),
         overlay: overlayFor(),
         localSeat: mode === "coop" && coop.running ? coop.seat : -1,
+        smooth: smoothing ? smoothPose : undefined,
       });
       soundBank.hear(g);
     }
@@ -1668,6 +1761,9 @@ const loop = createLoop({
     } else if (netstats.textContent !== "") {
       netstats.textContent = "";
     }
+
+    lastWorkMs = performance.now() - drawStart + updateWorkMs;
+    updateWorkMs = 0;
   },
   report,
 });
