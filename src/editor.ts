@@ -79,6 +79,50 @@ interface EditorState {
 
 const UNDO_WINDOW_MS = 6000;
 
+/**
+ * A modal question with named answers. The browser offers confirm() with
+ * two answers it will not let you name; "save, discard or stay" is three,
+ * and "rename it, or save a copy" deserves its own words. Resolves the index
+ * of the answer chosen, or null when the dialog is dismissed with Escape.
+ */
+function createChoiceDialog(): (text: string, choices: string[]) => Promise<number | null> {
+  let dialog: HTMLDialogElement | null = null;
+  return (text, choices) =>
+    new Promise((resolve) => {
+      if (!dialog) {
+        dialog = document.createElement("dialog");
+        dialog.className = "choice-dialog";
+        document.body.append(dialog);
+      }
+      const box = dialog;
+      const message = document.createElement("p");
+      message.textContent = text;
+      const row = document.createElement("div");
+      row.className = "button-row";
+      let done = false;
+      const onClose = () => finish(null);
+      const finish = (index: number | null) => {
+        if (done) return;
+        done = true;
+        box.removeEventListener("close", onClose);
+        if (box.open) box.close();
+        resolve(index);
+      };
+      choices.forEach((label, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        if (index === 0) button.className = "primary";
+        button.addEventListener("click", () => finish(index));
+        row.append(button);
+      });
+      box.replaceChildren(message, row);
+      box.addEventListener("close", onClose);
+      box.showModal();
+      row.querySelector("button")?.focus();
+    });
+}
+
 export function createLevelEditor(options: {
   elements: LevelEditorElements;
   store: LevelStore;
@@ -93,6 +137,7 @@ export function createLevelEditor(options: {
 
   let openFlag = false;
   let brush = SHROOM_HP;
+  const ask = createChoiceDialog();
   let hover: { col: number; row: number } | null = null;
   let painting = false;
   let paintValue = 0;
@@ -200,20 +245,17 @@ export function createLevelEditor(options: {
   /**
    * Unsaved work is never thrown away in silence. Before New, opening
    * another field, or importing, the person chooses: save it, discard it,
-   * or stay. Two native questions stand in for the three-button dialog the
-   * browser does not offer.
+   * or stay.
    */
-  function settleDirty(before: string): boolean {
+  async function settleDirty(before: string): Promise<boolean> {
     if (!session.state.dirty) return true;
     const label = session.state.name;
-    if (window.confirm(`Save the changes to "${label}" before ${before}?`)) {
-      if (!session.save()) {
-        say("The browser refused to save — export a file instead.");
-        return false;
-      }
-      return true;
+    const choice = await ask(`"${label}" has unsaved changes. Save them before ${before}?`, ["Save", "Discard", "Cancel"]);
+    if (choice === 0) {
+      await save();
+      return !session.state.dirty;
     }
-    return window.confirm(`Discard the unsaved changes to "${label}"?`);
+    return choice === 1;
   }
 
   function paint(col: number, row: number, value: number): void {
@@ -227,8 +269,23 @@ export function createLevelEditor(options: {
 
   // --- The verbs. Each one is a sentence from the contract. -----------------
 
-  function save(): void {
+  async function save(): Promise<void> {
     applyInputs();
+    const { id, renamed, savedName, name } = session.state;
+    if (id !== null && renamed && savedName !== null) {
+      // A saved field under a changed name: did they mean to rename it, or
+      // to keep the old one and save this as a new field? Ryan asked for the
+      // question after Save had, correctly but silently, renamed a field.
+      const choice = await ask(
+        `You changed the name from "${savedName}" to "${name}". Rename the saved field, or keep "${savedName}" as it was and save this as a new field?`,
+        ["Rename it", "Save as a new field", "Cancel"],
+      );
+      if (choice === null || choice === 2) return;
+      if (choice === 1) {
+        duplicate();
+        return;
+      }
+    }
     const entry = session.save();
     if (entry) {
       renderShelf();
@@ -250,20 +307,20 @@ export function createLevelEditor(options: {
     say(`Duplicated as "${entry.name}" — you are editing the copy.`);
   }
 
-  function newField(): void {
-    if (!settleDirty("starting a new field")) return;
+  async function newField(): Promise<void> {
+    if (!(await settleDirty("starting a new field"))) return;
     session.new({ force: true });
     adopt(session.state.doc);
     renderShelf();
     say("A new, empty field.");
   }
 
-  function openEntry(entry: { id: string; name: string }): void {
+  async function openEntry(entry: { id: string; name: string }): Promise<void> {
     if (entry.id === session.state.id) {
       say(`"${entry.name}" is already open.`);
       return;
     }
-    if (!settleDirty(`opening "${entry.name}"`)) return;
+    if (!(await settleDirty(`opening "${entry.name}"`))) return;
     if (!session.open(entry.id, { force: true })) return;
     adopt(session.state.doc);
     renderShelf();
@@ -275,7 +332,8 @@ export function createLevelEditor(options: {
     if (!next || next === entry.name) return;
     if (entry.id === session.state.id) {
       elements.name.value = next;
-      applyInputs(); // the open field renames through the session
+      applyInputs();
+      session.save(); // explicit intent: the open field is renamed in place
     } else {
       library.rename(entry.id, next);
     }
@@ -295,7 +353,7 @@ export function createLevelEditor(options: {
   }
 
   async function importFile(file: File): Promise<void> {
-    if (!settleDirty("importing a file")) return;
+    if (!(await settleDirty("importing a file"))) return;
     try {
       await session.importFile(file, { force: true });
       adopt(session.state.doc);
@@ -372,7 +430,7 @@ export function createLevelEditor(options: {
       allowInTextEntry: true,
       label: "Ctrl+S",
       description: "save",
-      run: save,
+      run: () => void save(),
     },
     ...[1, 2, 3, 4].map((hp) => ({
       code: `Digit${hp}`,
@@ -401,9 +459,9 @@ export function createLevelEditor(options: {
     .join("  ·  ");
 
   // --- Wire the chrome. ----------------------------------------------------
-  elements.buttons.save.addEventListener("click", save);
+  elements.buttons.save.addEventListener("click", () => void save());
   elements.buttons.duplicate.addEventListener("click", duplicate);
-  elements.buttons.newField.addEventListener("click", newField);
+  elements.buttons.newField.addEventListener("click", () => void newField());
   elements.buttons.clear.addEventListener("click", () => {
     state.cells = new Array(COLS * ROWS).fill(0);
     commit();
@@ -489,22 +547,28 @@ export function createLevelEditor(options: {
     open(doc) {
       openFlag = true;
       elements.panel.classList.remove("hidden");
-      if (doc) {
-        // A shared link or a hand-in: a new, unsaved field.
-        if (settleDirty("opening the shared field")) {
-          session.openDocument(doc, { force: true });
-          adopt(session.state.doc);
-        }
-      } else if (!session.state.dirty && session.state.id === null && session.hasDraft()) {
-        if (window.confirm("Restore the unsaved field from last time?")) {
-          session.restoreDraft();
-          adopt(session.state.doc);
-        } else {
-          session.discardDraft();
-        }
-      }
       renderShelf();
       say("Paint with the mouse; right-click erases.");
+      if (doc) {
+        // A shared link or a hand-in: a new, unsaved field.
+        void settleDirty("opening the shared field").then((ok) => {
+          if (!ok) return;
+          session.openDocument(doc, { force: true });
+          adopt(session.state.doc);
+          renderShelf();
+          say(`Editing the shared field "${session.state.name}" — save it to keep it.`);
+        });
+      } else if (!session.state.dirty && session.state.id === null && session.hasDraft()) {
+        void ask("Restore the unsaved field from last time?", ["Restore", "Discard"]).then((choice) => {
+          if (choice === 0) {
+            session.restoreDraft();
+            adopt(session.state.doc);
+            say("Restored the unsaved field.");
+          } else {
+            session.discardDraft();
+          }
+        });
+      }
     },
     close() {
       if (!openFlag) return;

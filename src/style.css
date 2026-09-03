@@ -247,3 +247,7 @@ dialog h3.section {
 .shelf-action { flex: 0 0 auto; font-size: 12px; padding: 2px 8px; }
 .shelf-entry.open .shelf-load { border-color: var(--game-action-primary, #62d389); }
 .status button { margin-left: 4px; font-size: 12px; padding: 2px 8px; vertical-align: baseline; }
+
+.choice-dialog { max-width: 440px; padding: 18px 20px; }
+.choice-dialog p { margin: 0 0 14px; line-height: 1.5; }
+.choice-dialog .button-row { justify-content: flex-end; margin: 0; }
