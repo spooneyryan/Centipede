@@ -46,6 +46,10 @@ export interface Tuning {
   loneHeadBoost: number;
   /** Ceiling on cells per second, however high the level. */
   centipedeMaxSpeed: number;
+  /** What each step costs, as a multiple of a normal one, once a centipede is
+   * pinned in a one-cell channel and falling rather than walking. 1 is the
+   * arcade behaviour. */
+  plungeSlowdown: number;
   /** Shots needed to destroy a mushroom. */
   shroomHp: number;
   /** 1 if mushrooms are solid to the blaster, 0 to walk through them. */
@@ -131,6 +135,7 @@ export const DEFAULT_TUNING: Tuning = {
   centipedeLevelGain: 1, // TUNED (was 1.15)
   loneHeadBoost: 1.45,
   centipedeMaxSpeed: 26,
+  plungeSlowdown: 3, // TUNED (the arcade, and the Rust original, are 1)
   shroomHp: SHROOM_HP,
   shroomsBlockPlayer: 1,
   shroomStartCount: SHROOM_START_COUNT,
@@ -201,6 +206,9 @@ export const TUNING_FIELDS: readonly TuningField[] = [
   { key: "playerSpeed", label: "Blaster speed", hint: "keyboard movement; the mouse is never speed-limited", min: 120, max: 1600, step: 20, unit: "px/s", group: "Blaster" },
 
   { key: "centipedeSpeed", label: "Centipede speed", hint: "cells per second on level 1", min: 2, max: 26, step: 0.5, unit: "c/s", group: "Centipede" },
+  // 1 restores the arcade exactly, which is what makes this safe to expose:
+  // the knob can put the original behaviour back rather than only soften it.
+  { key: "plungeSlowdown", label: "Plunge slowdown", hint: "how much longer each step of a pinned vertical fall takes; 1 is the arcade original", min: 1, max: 6, step: 0.5, unit: "x", group: "Centipede" },
   { key: "centipedeLevelGain", label: "Speed per level", hint: "cells per second added each level", min: 0, max: 5, step: 0.05, unit: "c/s", group: "Centipede" },
   { key: "centipedeMaxSpeed", label: "Speed ceiling", hint: "however high the level, never faster than this", min: 4, max: 60, step: 1, unit: "c/s", group: "Centipede" },
   { key: "loneHeadBoost", label: "Lone head boost", hint: "how much faster a single segment scuttles", min: 1, max: 3, step: 0.05, unit: "x", group: "Centipede" },

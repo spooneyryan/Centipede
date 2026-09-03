@@ -670,7 +670,7 @@ export class Game {
     }
 
     if (tail.length > 0) {
-      const train = new Train(tail, stepInterval(level, tail.length, this.tuning));
+      const train = new Train(tail, stepInterval(level, tail.length, this.tuning), this.tuning.plungeSlowdown);
       train.dirY = dirY;
       this.trains.push(train);
     }
@@ -862,6 +862,8 @@ interface TrainSnap {
   timer: number;
   t: number;
   diving: boolean;
+  blockedRun: number;
+  plungeFactor: number;
 }
 
 interface SlotSnap {
@@ -1009,7 +1011,7 @@ export function takeSnapshot(g: Game, into?: Snap): Snap {
 
   snap.trainCount = g.trains.length;
   while (snap.trains.length < g.trains.length) {
-    snap.trains.push({ segments: [], segmentCount: 0, dirY: 0, interval: 0, timer: 0, t: 0, diving: false });
+    snap.trains.push({ segments: [], segmentCount: 0, dirY: 0, interval: 0, timer: 0, t: 0, diving: false, blockedRun: 0, plungeFactor: 1 });
   }
   for (let i = 0; i < g.trains.length; i++) {
     const ts = snap.trains[i];
@@ -1029,6 +1031,8 @@ export function takeSnapshot(g: Game, into?: Snap): Snap {
     }
     ts.dirY = train.dirY;
     ts.interval = train.interval;
+    ts.blockedRun = train.blockedRun;
+    ts.plungeFactor = train.plungeFactor;
     ts.timer = train.timer;
     ts.t = train.t;
     ts.diving = train.diving;
@@ -1103,11 +1107,12 @@ export function restoreSnapshot(g: Game, snap: Snap): void {
       seg.prevRow = ss.prevRow;
       segments.push(seg);
     }
-    const train = new Train(segments, ts.interval);
+    const train = new Train(segments, ts.interval, ts.plungeFactor);
     train.dirY = ts.dirY;
     train.timer = ts.timer;
     train.t = ts.t;
     train.diving = ts.diving;
+    train.blockedRun = ts.blockedRun;
     g.trains.push(train);
   }
 

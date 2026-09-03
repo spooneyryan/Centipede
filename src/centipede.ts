@@ -58,14 +58,35 @@ export class Train {
   /** Set when the head touches a poisoned mushroom: the whole train drops
    * straight down until it reaches the floor, then resumes walking. */
   diving: boolean;
+  /** Consecutive steps that were BLOCKED, and so moved vertically instead of
+   * sideways. A normal turn-around is one; anything more means the head is
+   * pinned in a one-cell channel and is falling rather than walking. */
+  blockedRun: number;
+  /** What each step of such a fall costs, as a multiple of `interval`. 1 is
+   * the arcade behaviour: pinned, the head descends a row per step, so a wall
+   * with a run of mushrooms beside it drops it the height of the screen in
+   * well under a second. Above 1 it falls visibly instead. */
+  plungeFactor: number;
 
-  constructor(segments: Segment[], interval: number) {
+  constructor(segments: Segment[], interval: number, plungeFactor = 1) {
     this.segments = segments;
     this.dirY = 1;
     this.interval = interval;
     this.timer = 0;
     this.t = 0;
     this.diving = false;
+    this.blockedRun = 0;
+    this.plungeFactor = plungeFactor;
+  }
+
+  /** Seconds the NEXT step will cost.
+   *
+   * The first blocked step is free, because that is an ordinary turn-around
+   * and slowing it would make every bounce feel sluggish. It is the second
+   * and later ones -- the head pinned between a wall and a mushroom, taking
+   * no sideways step at all -- that get stretched. */
+  private stepCost(): number {
+    return this.blockedRun > 1 ? this.interval * this.plungeFactor : this.interval;
   }
 
   get length(): number {
@@ -81,11 +102,16 @@ export class Train {
   update(dt: number, field: MushroomField, top: number, bottom: number): boolean {
     let touchedBottom = false;
     this.timer += dt;
-    while (this.timer >= this.interval) {
-      this.timer -= this.interval;
+    // Re-read the cost after every step: a step can start a fall or end one,
+    // and the next step has to be charged at the new rate rather than the
+    // rate that was in force when this update began.
+    let cost = this.stepCost();
+    while (this.timer >= cost) {
+      this.timer -= cost;
       touchedBottom = this.step(field, top, bottom) || touchedBottom;
+      cost = this.stepCost();
     }
-    this.t = Math.min(Math.max(this.timer / this.interval, 0), 1);
+    this.t = Math.min(Math.max(this.timer / cost, 0), 1);
     return touchedBottom;
   }
 
@@ -112,8 +138,12 @@ export class Train {
     let hitFloor = false;
     const head = this.segments[0];
 
-    // Poisoned: ignore the walls and the mushrooms and plunge.
+    // Poisoned: ignore the walls and the mushrooms and plunge. Deliberately
+    // NOT slowed -- a poison dive is a mechanic you can see coming, announced
+    // by the mushroom that caused it, rather than a head vanishing off the
+    // bottom of a wall for no visible reason.
     if (this.diving) {
+      this.blockedRun = 0;
       const nextRow = head.row + 1;
       if (nextRow > bottom) {
         head.row = bottom;
@@ -140,8 +170,12 @@ export class Train {
       }
       head.row = Math.min(Math.max(nextRow, top), bottom);
       head.dirX = -head.dirX;
+      // Every blocked step moves vertically and none moves sideways, so this
+      // counter IS the length of the fall in progress.
+      this.blockedRun += 1;
     } else {
       head.col = nextCol;
+      this.blockedRun = 0;
     }
 
     // Either standing on the floor, or having just tried to descend past it.
@@ -183,13 +217,17 @@ export function spawnWave(level: number, tuning: Tuning = DEFAULT_TUNING): Train
   for (let i = 0; i < mainLen; i++) {
     segments.push(new Segment(mainLen - 1 - i, TOP_ROW, 1));
   }
-  trains.push(new Train(segments, stepInterval(level, mainLen, tuning)));
+  trains.push(new Train(segments, stepInterval(level, mainLen, tuning), tuning.plungeSlowdown));
 
   // Lone heads spread across the right-hand side, walking left to meet it.
   for (let i = 0; i < extraHeads; i++) {
     const col = COLS - 3 - i * 4;
     trains.push(
-      new Train([new Segment(Math.max(col, mainLen + 1), TOP_ROW, -1)], stepInterval(level, 1, tuning)),
+      new Train(
+        [new Segment(Math.max(col, mainLen + 1), TOP_ROW, -1)],
+        stepInterval(level, 1, tuning),
+        tuning.plungeSlowdown,
+      ),
     );
   }
 

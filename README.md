@@ -173,6 +173,45 @@ interval or the coin chance to 0 turns that thing off entirely, so you can dial
 back to plain 1981 Centipede if you want it.
 
 
+## The plunge, and why it is slower than the arcade
+
+A centipede against a wall with a run of mushrooms in the next column is
+blocked **both** ways. Every step drops it a row and none moves it sideways,
+so the zigzag collapses into a straight vertical line:
+
+```
+        col 46   col 47 | wall
+row 8     #        o  ->|   blocked by the wall -> drop, reverse
+row 9     #     <- o    |   blocked by the # -> drop, reverse
+row 10    #        o -> |   one row per step, all the way to the floor
+```
+
+That is what the arcade does, and `Rust/src/centipede.rs` does it line for
+line. It is also startling: measured on a lone head at level 12, it crossed
+all 25 rows of the playfield in **0.97 seconds**, which reads as teleporting
+rather than falling.
+
+It is not rare, either. Watching 400 seeds for 6,000 ticks each -- about
+eleven hours of play -- turned up **275** falls of five rows or more with no
+sideways step, 97 of them ten rows or longer. **55% were hard against a wall,
+and the right wall outnumbered the left 133 to 18.** The code is symmetric;
+the geometry is not. The wave enters at the top left walking right and the
+extra lone heads spawn on the right, so the right wall absorbs far more
+turn-arounds -- and accumulates the mushroom runs that spring the trap.
+
+`Plunge slowdown` in Settings is the answer: the first blocked step is free,
+because that is an ordinary turn-around, and every consecutive one costs that
+multiple of a step. At the shipped 3x the same fall takes 2.73s -- still fast,
+still lethal, but visible. **Set it to 1 for the arcade exactly**, which is
+what makes the knob safe to expose: it restores the original rather than only
+softening it.
+
+`npm run check` holds both ends of that. A pinned head must still fall the
+whole way and must never get a sideways step; 1x must match the arcade's own
+arithmetic; and an ordinary bounce off a bare wall must take *identically* as
+long at 1x and 6x, because the failure mode of this change would be making
+every bounce in the game feel sluggish.
+
 ## The music
 
 Three loops — a march, a faster chase, and a slow attract theme — live in

@@ -52,6 +52,13 @@ const {
   STATE_LEVEL_CLEAR,
   DEFAULT_TUNING,
   TUNING_FIELDS,
+  Segment,
+  Train,
+  MushroomField,
+  stepInterval,
+  TOP_ROW,
+  BOTTOM_ROW,
+  COLS,
   normalizeTuning,
   powersAfterDeath,
 } = sim;
@@ -166,13 +173,18 @@ function freshGame(seed, players, tuning) {
   // These only bite once a power-up is actually held, so they get their own
   // test below rather than a spawn-and-hope.
   const NEEDS_A_POWERUP = new Set(["powerSeconds", "shieldSeconds", "rapidFactor", "curveSteer"]);
+  // And this one only bites once a centipede is PINNED between a wall and a
+  // run of mushrooms. That happens about once every 8,700 ticks of ordinary
+  // play, so a 900-tick sample would pass or fail on luck. It gets a test
+  // that builds the trap instead -- see "a pinned centipede" below.
+  const NEEDS_A_PIN = new Set(["plungeSlowdown"]);
 
   // A nudge that happens to equal the default exercises nothing, and the
   // failure it produces -- "changed nothing" -- reads as though the knob were
   // unwired, sending you to look at the simulation instead of at this table.
   // maxBullets sat exactly here once its default became 1.
   const collided = TUNING_FIELDS
-    .filter((f) => !NEEDS_A_POWERUP.has(f.key) && NUDGE[f.key] === DEFAULT_TUNING[f.key])
+    .filter((f) => !NEEDS_A_POWERUP.has(f.key) && !NEEDS_A_PIN.has(f.key) && NUDGE[f.key] === DEFAULT_TUNING[f.key])
     .map((f) => f.key);
   check(
     "every nudge differs from the default it is testing against",
@@ -181,7 +193,7 @@ function freshGame(seed, players, tuning) {
   );
 
   for (const field of TUNING_FIELDS) {
-    if (NEEDS_A_POWERUP.has(field.key)) continue;
+    if (NEEDS_A_POWERUP.has(field.key) || NEEDS_A_PIN.has(field.key)) continue;
     const value = NUDGE[field.key];
     check(
       `the simulation obeys ${field.label.toLowerCase()}`,
@@ -210,6 +222,81 @@ function freshGame(seed, players, tuning) {
     "the simulation obeys curve gun steering",
     withPower(curveOn, DEFAULT_TUNING) !== withPower(curveOn, { ...DEFAULT_TUNING, curveSteer: 1800 }),
   );
+  // --- A pinned centipede falls, rather than teleporting. -------------------
+  //
+  // The bug this guards: a head against a wall with a run of mushrooms in the
+  // next column is blocked BOTH ways, so every step drops it a row and none
+  // moves it sideways. Measured before the fix, that took a lone head down all
+  // 25 rows of the playfield in 0.96s at level 12 -- read as the centipede
+  // teleporting. It is what the arcade does, and what the Rust original does;
+  // `plungeSlowdown` is what makes it visible.
+  //
+  // The trap is built here rather than waited for. In 400 seeds x 6000 ticks
+  // of play one turns up about every 8,700 ticks, so a sampled run would pass
+  // or fail on luck.
+  const pinnedFall = (plungeSlowdown) => {
+    const field = new MushroomField();
+    for (let row = TOP_ROW; row <= BOTTOM_ROW; row++) field.plant(COLS - 2, row);
+    const tuning = { ...DEFAULT_TUNING, plungeSlowdown };
+    const head = new Segment(COLS - 1, TOP_ROW, 1); // at the wall, facing it
+    const train = new Train([head], stepInterval(1, 1, tuning), tuning.plungeSlowdown);
+    let seconds = 0;
+    const dt = 1 / 60;
+    for (let tick = 0; tick < 60 * 60 && head.row < BOTTOM_ROW; tick++) {
+      train.update(dt, field, TOP_ROW, BOTTOM_ROW);
+      seconds += dt;
+    }
+    return { rows: head.row - TOP_ROW, seconds, col: head.col };
+  };
+
+  const arcade = pinnedFall(1);
+  const slowed = pinnedFall(3);
+
+  check(
+    "a pinned centipede still falls the whole way",
+    arcade.rows === slowed.rows && slowed.rows >= 20,
+    `arcade ${arcade.rows} rows, slowed ${slowed.rows}`,
+  );
+  check(
+    "a pinned centipede never gets a sideways step",
+    arcade.col === COLS - 1 && slowed.col === COLS - 1,
+    `ended at col ${arcade.col} / ${slowed.col}`,
+  );
+  // The whole point of the knob: same fall, more seconds.
+  check(
+    "the simulation obeys plunge slowdown",
+    slowed.seconds > arcade.seconds * 2,
+    `arcade ${arcade.seconds.toFixed(2)}s, slowed ${slowed.seconds.toFixed(2)}s`,
+  );
+  check(
+    "plunge slowdown 1 is the arcade exactly",
+    Math.abs(arcade.seconds - arcade.rows / (DEFAULT_TUNING.centipedeSpeed * DEFAULT_TUNING.loneHeadBoost)) < 0.05,
+    `${arcade.seconds.toFixed(3)}s for ${arcade.rows} rows`,
+  );
+
+  // The risk of the whole change: charging more for a blocked step could make
+  // every ordinary bounce feel sluggish. It must not, because a normal
+  // turn-around is ONE blocked step and only the second and later ones cost
+  // extra. Same field with nothing beside the wall, same walk, same clock.
+  const ordinaryZigzag = (plungeSlowdown) => {
+    const field = new MushroomField();          // empty: nothing to pin against
+    const tuning = { ...DEFAULT_TUNING, plungeSlowdown };
+    const head = new Segment(COLS - 4, TOP_ROW, 1);
+    const train = new Train([head], stepInterval(1, 1, tuning), tuning.plungeSlowdown);
+    let seconds = 0;
+    const dt = 1 / 60;
+    for (let tick = 0; tick < 60 * 30 && head.row < TOP_ROW + 6; tick++) {
+      train.update(dt, field, TOP_ROW, BOTTOM_ROW);
+      seconds += dt;
+    }
+    return seconds;
+  };
+  check(
+    "an ordinary bounce off the wall is not slowed",
+    Math.abs(ordinaryZigzag(1) - ordinaryZigzag(6)) < 1e-9,
+    `1x took ${ordinaryZigzag(1).toFixed(3)}s, 6x took ${ordinaryZigzag(6).toFixed(3)}s`,
+  );
+
   check(
     "power-ups lapse, and the duration decides when",
     withPower(rapidOn, DEFAULT_TUNING) !== withPower((p) => { p.rapid = 0.1; }, DEFAULT_TUNING),
