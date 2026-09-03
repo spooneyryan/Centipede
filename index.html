@@ -14,7 +14,7 @@
     <!-- The level editor: chrome around the same canvas the game draws on. -->
     <aside id="editorPanel" class="panel hidden">
       <h2>Field designer</h2>
-      <label class="field-row">Name <input id="editorName" type="text" maxlength="48" value="Untitled field"></label>
+      <label class="field-row">Name <input id="editorName" type="text" maxlength="48" value="Untitled field"><i id="editorDirty" class="dirty-dot" title="Unsaved changes" aria-label="Unsaved changes" hidden></i></label>
       <label class="field-row">Starts on level <input id="editorStartLevel" type="number" min="1" max="50" value="1"></label>
       <div class="button-row">
         <button id="editorUndo" type="button">Undo</button>
@@ -23,20 +23,20 @@
         <button id="editorScatter" type="button">Scatter</button>
       </div>
       <div class="button-row">
-        <button id="editorSave" type="button">Save</button>
-        <button id="editorSaveAs" type="button">Save as</button>
         <button id="editorNew" type="button">New</button>
+        <button id="editorDuplicate" type="button" title="Copy this field to &quot;(copy)&quot; and edit the copy">Duplicate</button>
+        <button id="editorSave" type="button" class="primary" disabled>Save</button>
       </div>
       <div class="button-row">
-        <button id="editorPlaytest" type="button" class="primary">Playtest</button>
+        <button id="editorPlaytest" type="button">Playtest</button>
         <button id="editorHostCoop" type="button">Host co-op</button>
       </div>
       <div class="button-row">
-        <button id="editorDownload" type="button">Download</button>
+        <button id="editorImport" type="button">Import…</button>
+        <button id="editorExport" type="button">Export</button>
         <button id="editorShare" type="button">Share link</button>
-        <button id="editorImport" type="button">Import</button>
       </div>
-      <h3>Shelf</h3>
+      <h3>Saved fields</h3>
       <div id="editorShelf" class="shelf"></div>
       <p id="editorStatus" class="status">Paint with the mouse; right-click erases.</p>
       <p id="editorHelp" class="help"></p>
@@ -145,7 +145,7 @@
   <p class="hint">A replay is the seed plus every input — the whole run in a few kilobytes.</p>
   <div class="button-row">
     <button id="replaySaveLast" type="button" class="primary" disabled>Save last run</button>
-    <button id="replayImport" type="button">Import</button>
+    <button id="replayImport" type="button">Import…</button>
   </div>
   <p id="replayNote" class="status"></p>
   <div id="replayRows" class="shelf"></div>

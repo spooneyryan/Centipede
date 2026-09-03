@@ -237,3 +237,13 @@ dialog h3.section {
   color: var(--game-text-muted, #6b7c96);
   white-space: nowrap;
 }
+
+
+/* The document chrome the GameBase editors share (EDITOR-UX.md): the dot
+ * after the name while unsaved, small per-entry actions on a shelf, and an
+ * action riding the status line ("Deleted X. [Undo]"). */
+.dirty-dot[hidden] { display: none; } /* an author display beats the hidden attribute otherwise */
+.dirty-dot { display: inline-block; width: 7px; height: 7px; margin-left: 6px; border-radius: 50%; background: var(--game-status-warning, #ffb454); vertical-align: middle; }
+.shelf-action { flex: 0 0 auto; font-size: 12px; padding: 2px 8px; }
+.shelf-entry.open .shelf-load { border-color: var(--game-action-primary, #62d389); }
+.status button { margin-left: 4px; font-size: 12px; padding: 2px 8px; vertical-align: baseline; }

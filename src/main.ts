@@ -1025,6 +1025,10 @@ function exitReplay(): void {
   updateLegend();
 }
 
+/** The last replay deleted, kept for the undo window — the same rule the
+ * level shelf follows through its document session. */
+let replayUndo: { entry: { id: string; name: string; document: ReplayDoc }; timer: number } | null = null;
+
 function renderReplayRows(): void {
   const matchRunning = mode === "coop" && coop.running;
   replaySaveLast.disabled = !recorder || recorder.ticks === 0;
@@ -1050,21 +1054,52 @@ function renderReplayRows(): void {
     watch.textContent = `${entry.name} · ${seconds}s · ${entry.document.players}P`;
     watch.disabled = matchRunning;
     watch.addEventListener("click", () => watchReplay(entry.document));
-    const download = document.createElement("button");
-    download.type = "button";
-    download.textContent = "⬇";
-    download.title = "Download";
-    download.addEventListener("click", () => replayFormat.download(entry.document, entry.name));
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "shelf-delete";
-    del.textContent = "✕";
-    del.title = "Delete";
-    del.addEventListener("click", () => {
-      replayLibrary.remove(entry.id);
-      renderReplayRows();
-    });
-    row.append(watch, download, del);
+    const action = (label: string, title: string, run: () => void): HTMLButtonElement => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "shelf-action";
+      button.textContent = label;
+      button.title = title;
+      button.addEventListener("click", run);
+      return button;
+    };
+    row.append(
+      watch,
+      action("Rename", `Rename "${entry.name}"`, () => {
+        const next = window.prompt(`Rename "${entry.name}" to:`, entry.name)?.trim();
+        if (!next || next === entry.name) return;
+        replayLibrary.rename(entry.id, next);
+        renderReplayRows();
+        replayNote.textContent = `Renamed to "${next}".`;
+      }),
+      action("Export", `Export "${entry.name}" as a file`, () => {
+        replayFormat.download(entry.document, entry.name);
+      }),
+      action("Delete", `Delete "${entry.name}" (undo for a few seconds)`, () => {
+        replayLibrary.remove(entry.id);
+        if (replayUndo) clearTimeout(replayUndo.timer);
+        replayUndo = {
+          entry,
+          timer: window.setTimeout(() => {
+            replayUndo = null;
+            renderReplayRows();
+          }, 6000),
+        };
+        renderReplayRows();
+        const undo = document.createElement("button");
+        undo.type = "button";
+        undo.textContent = "Undo";
+        undo.addEventListener("click", () => {
+          if (!replayUndo) return;
+          clearTimeout(replayUndo.timer);
+          replayLibrary.save(replayUndo.entry.document, { id: replayUndo.entry.id, name: replayUndo.entry.name });
+          replayUndo = null;
+          renderReplayRows();
+          replayNote.textContent = `Restored "${entry.name}".`;
+        });
+        replayNote.replaceChildren(`Deleted "${entry.name}". `, undo);
+      }),
+    );
     replayRows.append(row);
   }
 }
@@ -1287,15 +1322,16 @@ const editor = createLevelEditor({
     shelf: el("editorShelf"),
     status: el("editorStatus"),
     help: el("editorHelp"),
+    dirty: el("editorDirty"),
     buttons: {
       save: el<HTMLButtonElement>("editorSave"),
-      saveAs: el<HTMLButtonElement>("editorSaveAs"),
+      duplicate: el<HTMLButtonElement>("editorDuplicate"),
       newField: el<HTMLButtonElement>("editorNew"),
       clear: el<HTMLButtonElement>("editorClear"),
       scatter: el<HTMLButtonElement>("editorScatter"),
       playtest: el<HTMLButtonElement>("editorPlaytest"),
       hostCoop: el<HTMLButtonElement>("editorHostCoop"),
-      download: el<HTMLButtonElement>("editorDownload"),
+      exportFile: el<HTMLButtonElement>("editorExport"),
       share: el<HTMLButtonElement>("editorShare"),
       importFile: el<HTMLButtonElement>("editorImport"),
       close: el<HTMLButtonElement>("editorClose"),
