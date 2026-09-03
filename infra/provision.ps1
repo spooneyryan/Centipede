@@ -338,8 +338,32 @@ if ($Deploy) {
     Step "Building"
     Push-Location $repo
     try {
-        npm ci
-        if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+        # `npm ci` DELETES node_modules and reinstalls from scratch. That is
+        # the right thing on a build agent and a hazard here: anything holding
+        # a file in there -- a dev server, an editor, an antivirus scan --
+        # makes the delete fail EPERM, and by then the tree is already gone.
+        # That is exactly what happened: a vite dev server for this project
+        # was running, `npm ci` wiped node_modules, could not replace the
+        # binaries vite had open, and left the repo unable to build at all.
+        #
+        # npm writes node_modules/.package-lock.json on every install, so the
+        # tree is known to match the lockfile when that marker is newer. When
+        # it is, there is nothing to install and nothing to destroy.
+        $marker = Join-Path $repo "node_modules/.package-lock.json"
+        $lock = Join-Path $repo "package-lock.json"
+        $fresh = (Test-Path $marker) -and
+                 ((Get-Item $marker).LastWriteTimeUtc -ge (Get-Item $lock).LastWriteTimeUtc)
+        if ($fresh) {
+            Ok "dependencies already match package-lock.json"
+        }
+        else {
+            npm ci
+            if ($LASTEXITCODE -ne 0) {
+                throw "npm ci failed. If it says EPERM, something is holding a file in " +
+                      "node_modules -- a dev server is the usual one. Stop it, then run " +
+                      "``npm install`` to repair the tree before retrying."
+            }
+        }
         npm run build
         if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
 
