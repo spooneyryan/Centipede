@@ -307,6 +307,9 @@ applySkinChoice();
 
 // --- Display: fixed 1920x1080 world space, letterboxed. --------------------
 const canvas = el<HTMLCanvasElement>("screen");
+// Up here with the canvas rather than down with the rest of the toolbar:
+// `quitToMenu` and `updateLegend` are both defined above that point.
+const btnQuit = el<HTMLButtonElement>("btnQuit");
 const display = createDisplay(canvas, {
   designWidth: WIDTH,
   designHeight: HEIGHT,
@@ -655,6 +658,65 @@ function maybeStart(): void {
   if (game.state === STATE_ATTRACT || game.state === STATE_GAME_OVER) {
     startSoloRun(pendingLayout);
   }
+}
+
+/** Abandon whatever is running and go back to the title screen.
+ *
+ * A Game that has been constructed but not `start()`ed is already in
+ * STATE_ATTRACT, so "the main menu" is just a fresh one -- the same move the
+ * co-op `ended` handler makes when the other player leaves.
+ *
+ * The recorder is deliberately left alone. `recorderGame` still points at the
+ * game being abandoned, and the capture is gated on that pointer, so the
+ * attract screen replacing it cannot record over the run you just left -- you
+ * can still go to Replays and save it. */
+function quitToMenu(): void {
+  if (mode === "replay") {
+    // Whatever was underneath is still there; leaving the replay IS the way
+    // out of a replay, and quitting the game under it as well would be a
+    // surprise when that game is a running match.
+    exitReplay();
+    return;
+  }
+
+  // A run abandoned is still a run played: bank the score rather than make
+  // quitting the one way to lose it. `runOverReported` stops the natural
+  // game-over path reporting the same run a second time.
+  if (!runOverReported && game.state !== STATE_ATTRACT) {
+    runOverReported = true;
+    rememberHigh(game.score);
+    telemetry?.event("game.quit", { score: game.score, level: game.level, players: game.playerCount });
+  }
+
+  // Going back to a menu with the mouse still captured leaves a cursor nobody
+  // can reach.
+  if (pointerLocked || document.pointerLockElement === canvas) document.exitPointerLock();
+  soloPaused = false;
+  accumulator = 0;
+
+  if (mode === "coop" && coop.running) {
+    // `ended` builds the attract game itself; doing it here as well would
+    // stomp the one it is about to make.
+    coop.leave();
+    return;
+  }
+
+  mode = "solo";
+  game = new Game((Math.random() * 0x7fffffff) | 0, { highScore: storedHigh() });
+  soundBank.resync(game);
+  updateLegend();
+  updateQuitButton();
+}
+
+/** Nothing to quit on the title screen, so say so rather than offer a button
+ * that does nothing. */
+function updateQuitButton(): void {
+  const live =
+    mode === "replay" ||
+    (mode === "coop" && coop.running) ||
+    (game.state !== STATE_ATTRACT && game.state !== STATE_GAME_OVER);
+  btnQuit.disabled = !live;
+  btnQuit.textContent = mode === "replay" ? "Stop replay" : "Quit game";
 }
 
 function finishRunIfOver(g: Game): void {
@@ -1357,6 +1419,8 @@ const editor = createLevelEditor({
   },
 });
 
+btnQuit.addEventListener("click", () => quitToMenu());
+
 el<HTMLButtonElement>("btnEditor").addEventListener("click", () => {
   if (mode === "coop" && coop.running) return; // not while a match runs
   if (pointerLocked) document.exitPointerLock();
@@ -1487,6 +1551,15 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
+  // Q: give up on this game and go back to the title screen. No confirmation,
+  // for the same reason R has none -- it is a deliberate key, and the button
+  // beside it is the discoverable way in.
+  if (e.code === "KeyQ" && !editor.isOpen) {
+    quitToMenu();
+    e.preventDefault();
+    return;
+  }
+
   // P: pause, and the mouse follows the pause. Handled here rather than
   // through the action map because resuming re-grabs the mouse, which needs a
   // real user gesture.
@@ -1567,6 +1640,7 @@ function togglePauseAndMouse(gesture: boolean): void {
 
 const legend = el<HTMLElement>("legend");
 function updateLegend(): void {
+  updateQuitButton();
   if (editor.isOpen) {
     legend.innerHTML =
       "<b>CLICK</b> plant &nbsp;·&nbsp; <b>RIGHT-CLICK</b> erase &nbsp;·&nbsp; <b>1-4</b> brush &nbsp;·&nbsp; <b>0/E</b> eraser &nbsp;·&nbsp; <b>CTRL+Z</b> undo &nbsp;·&nbsp; <b>ESC</b> close";
@@ -1576,13 +1650,13 @@ function updateLegend(): void {
     const seat = coop.running ? `you are <b>PLAYER ${coop.seat + 1}</b> (marked ⌄)` : "waiting";
     const release = "";
     legend.innerHTML =
-      `<b>CO-OP</b> &nbsp;·&nbsp; ${seat} &nbsp;·&nbsp; <b>MOUSE</b>/<b>WASD</b> move &nbsp;·&nbsp; <b>SPACE</b> fire &nbsp;·&nbsp; <b>P</b>/<b>ESC</b> pause &nbsp;·&nbsp; <b>R</b> rematch${release}`;
+      `<b>CO-OP</b> &nbsp;·&nbsp; ${seat} &nbsp;·&nbsp; <b>MOUSE</b>/<b>WASD</b> move &nbsp;·&nbsp; <b>SPACE</b> fire &nbsp;·&nbsp; <b>P</b>/<b>ESC</b> pause &nbsp;·&nbsp; <b>R</b> rematch &nbsp;·&nbsp; <b>Q</b> quit${release}`;
   } else if (pointerLocked) {
     legend.innerHTML =
-      "<b>MOUSE CAPTURED</b> &nbsp;·&nbsp; move to fly the blaster &nbsp;·&nbsp; <b>CLICK</b> fire &nbsp;·&nbsp; <b>R</b> restart &nbsp;·&nbsp; <b>P</b>/<b>ESC</b> pause and release the mouse";
+      "<b>MOUSE CAPTURED</b> &nbsp;·&nbsp; move to fly the blaster &nbsp;·&nbsp; <b>CLICK</b> fire &nbsp;·&nbsp; <b>R</b> restart &nbsp;·&nbsp; <b>Q</b> quit &nbsp;·&nbsp; <b>P</b>/<b>ESC</b> pause and release the mouse";
   } else {
     legend.innerHTML =
-      "<b>CLICK</b> to capture the mouse &nbsp;·&nbsp; <b>&larr; &uarr; &rarr; &darr;</b> / <b>WASD</b> move &nbsp;·&nbsp; <b>SPACE</b> fire &nbsp;·&nbsp; <b>ENTER</b> start &nbsp;·&nbsp; <b>P</b>/<b>ESC</b> pause";
+      "<b>CLICK</b> to capture the mouse &nbsp;·&nbsp; <b>&larr; &uarr; &rarr; &darr;</b> / <b>WASD</b> move &nbsp;·&nbsp; <b>SPACE</b> fire &nbsp;·&nbsp; <b>ENTER</b> start &nbsp;·&nbsp; <b>P</b>/<b>ESC</b> pause &nbsp;·&nbsp; <b>Q</b> quit";
   }
 }
 
